@@ -3,10 +3,8 @@ import time
 import torch
 import torch.nn as nn
 
-try:
-    from torch_points import knn
-except (ModuleNotFoundError, ImportError):
-    from torch_points_kernels import knn
+
+from torch_points_kernels import knn
 
 class SharedMLP(nn.Module):
     def __init__(

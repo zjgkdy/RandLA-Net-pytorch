@@ -14,8 +14,11 @@ from torch.utils.tensorboard import SummaryWriter
 
 from data import data_loaders
 from model import RandLANet
-from utils.tools import Config as cfg
+from utils.tools import SemanticKITTIConfig as cfg
 from utils.metrics import accuracy, intersection_over_union
+from utils.utils import load_yaml, compute_avg_grad_norm, get_learning_rate
+
+from common.dataset.kitti.kittiDataset import SemanticKITTIDataset
 
 def evaluate(model, loader, criterion, device):
     model.eval()
@@ -23,9 +26,9 @@ def evaluate(model, loader, criterion, device):
     accuracies = []
     ious = []
     with torch.no_grad():
-        for points, labels in tqdm(loader, desc='Validation', leave=False):
-            points = points.to(device)
-            labels = labels.to(device)
+        for i, input_dict in enumerate(tqdm(loader, desc='Validation', leave=False)):
+            points = input_dict["points"].to(args.gpu)
+            labels = input_dict["labels"].to(args.gpu)
             scores = model(points)
             loss = criterion(scores, labels)
             losses.append(loss.cpu().item())
@@ -39,24 +42,33 @@ def train(args):
     val_path = args.dataset / args.val_dir
     logs_dir = args.logs_dir / args.name
     logs_dir.mkdir(exist_ok=True, parents=True)
-
+    
     # determine number of classes
     try:
-        with open(args.dataset / 'classes.json') as f:
-            labels = json.load(f)
-            num_classes = len(labels.keys())
+        DATA = load_yaml(args.dataset_cfg)
+        if args.task == "movable":
+            learning_classes = [k for k, v in DATA["learning_ignore"].items() if not v]
+            num_classes = len(learning_classes)
     except FileNotFoundError:
         num_classes = int(input("Number of distinct classes in the dataset: "))
 
-    train_loader, val_loader = data_loaders(
-        args.dataset,
-        args.dataset_sampling,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=True
-    )
 
-    d_in = next(iter(train_loader))[0].size(-1)
+    train_dataset = SemanticKITTIDataset(args.dataset, DATA, cfg, split="train")
+    valid_dataset = SemanticKITTIDataset(args.dataset, DATA, cfg, split="valid")
+
+    trainLoader = torch.utils.data.DataLoader(train_dataset,
+                                             batch_size=args.batch_size,    
+                                             shuffle=True,                  # 在每个epoch开始时打乱数据
+                                             num_workers=args.num_workers, 
+                                             pin_memory=True,)
+
+    validLoader = torch.utils.data.DataLoader(valid_dataset,
+                                             batch_size=1,    
+                                             shuffle=False,                  
+                                             num_workers=args.num_workers, 
+                                             pin_memory=True,)
+
+    d_in = next(iter(train_dataset))["points"].size(-1)
 
     model = RandLANet(
         d_in,
@@ -75,7 +87,7 @@ def train(args):
 
     print('Done.')
     print('Weights:', weights)
-    criterion = nn.CrossEntropyLoss(weight=weights)
+    criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=DATA["ignore_index"])
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.adam_lr)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, args.scheduler_gamma)
@@ -103,14 +115,15 @@ def train(args):
             ious = []
 
             # iterate over dataset
-            for points, labels in tqdm(train_loader, desc='Training', leave=False):
-                points = points.to(args.gpu)
-                labels = labels.to(args.gpu)
+            for i, input_dict in enumerate(tqdm(trainLoader, desc='Training', leave=False)):
+                points = input_dict["points"].to(args.gpu)
+                labels = input_dict["labels"].to(args.gpu)
                 optimizer.zero_grad()
 
-                scores = model(points)
+                logp = model(points)
+                scores = F.softmax(logp, dim=-1) 
 
-                logp = torch.distributions.utils.probs_to_logits(scores, is_binary=False)
+                # logp = torch.distributions.utils.probs_to_logits(scores, is_binary=False)
                 loss = criterion(logp, labels)
                 # logpy = torch.gather(logp, 1, labels)
                 # loss = -(logpy).mean()
@@ -119,18 +132,42 @@ def train(args):
 
                 optimizer.step()
 
-                losses.append(loss.cpu().item())
-                accuracies.append(accuracy(scores, labels))
-                ious.append(intersection_over_union(scores, labels))
+                loss_value = loss.cpu().item()
+                acc_list = accuracy(scores, labels)
+                iou_list = intersection_over_union(scores, labels)
 
+                losses.append(loss_value)
+                accuracies.append(acc_list)
+                ious.append(iou_list)
+
+                if i % 100 == 0:
+                    avg_grad_norm = compute_avg_grad_norm(model)
+                    current_lr = get_learning_rate(optimizer)
+                    for cls_idx in range(num_classes):
+                        cls_name = "unmovable" if cls_idx == 0 else "movable"
+                        writer.add_scalar(f'Train/Per-class accuracy/{cls_name}', acc_list[cls_idx], i)
+                        writer.add_scalar(f'Train/Per-class IoU/{cls_name}', iou_list[cls_idx], i)
+                    writer.add_scalar("Train/Loss", loss_value, i)   
+                    writer.add_scalar("Train/GradNorm", avg_grad_norm, i)
+                    writer.add_scalar("Train/LearningRate", current_lr, i)
+                    print(f"[Epoch {epoch:03d} | Iter {i:04d}] ",
+                          f"Loss: {loss_value:.4f} | ",
+                          f"GradNorm: {avg_grad_norm:.6f} | ",
+                          f"LR: {current_lr:.6f} | ",
+                          f"ACC: ", *[f'{acc:.3f}' if not np.isnan(acc) else '  nan' for acc in acc_list],
+                          f" | IOU: ", *[f'{iou:.3f}' if not np.isnan(iou) else '  nan' for iou in iou_list],)
+            
             scheduler.step()
+
+            if (epoch+1) % 5 !=0:
+                continue
 
             accs = np.nanmean(np.array(accuracies), axis=0)
             ious = np.nanmean(np.array(ious), axis=0)
 
             val_loss, val_accs, val_ious = evaluate(
                 model,
-                val_loader,
+                validLoader,
                 criterion,
                 args.gpu
             )
@@ -203,14 +240,18 @@ if __name__ == '__main__':
     dirs = parser.add_argument_group('Storage directories')
     misc = parser.add_argument_group('Miscellaneous')
 
+    base.add_argument('--task', type=str, help='',
+                        default='movable', choices=['semantic', 'movable', 'moving'])
     base.add_argument('--dataset', type=Path, help='location of the dataset',
                         default='datasets/s3dis/subsampled')
-
+    base.add_argument('--dataset_cfg', type=Path, help='config of the dataset',
+                        default='config/semantic-kitti-mos.yaml')
+    
     expr.add_argument('--epochs', type=int, help='number of epochs',
                         default=50)
     expr.add_argument('--load', type=str, help='model to load',
                         default='')
-
+    
     param.add_argument('--adam_lr', type=float, help='learning rate of the optimizer',
                         default=1e-2)
     param.add_argument('--batch_size', type=int, help='batch size',
@@ -218,7 +259,7 @@ if __name__ == '__main__':
     param.add_argument('--decimation', type=int, help='ratio the point cloud is divided by at each layer',
                         default=4)
     param.add_argument('--dataset_sampling', type=str, help='how dataset is sampled',
-                        default='active_learning', choices=['active_learning', 'naive'])
+                        default='naive', choices=['active_learning', 'naive'])
     param.add_argument('--neighbors', type=int, help='number of neighbors considered by k-NN',
                         default=16)
     param.add_argument('--scheduler_gamma', type=float, help='gamma of the learning rate scheduler',
@@ -238,7 +279,7 @@ if __name__ == '__main__':
     misc.add_argument('--name', type=str, help='name of the experiment',
                         default=None)
     misc.add_argument('--num_workers', type=int, help='number of threads for loading data',
-                        default=0)
+                        default=8)
     misc.add_argument('--save_freq', type=int, help='frequency of saving checkpoints',
                         default=10)
 

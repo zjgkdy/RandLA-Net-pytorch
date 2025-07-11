@@ -9,7 +9,7 @@ def accuracy(scores, labels):
         ----------
         scores: torch.FloatTensor, shape (B?, C, N)
             raw scores for each class
-        labels: torch.LongTensor, shape (B?, N)
+        labels: torch.LongTenor, shape (B?, N)
             ground truth labels
 
         Returns
