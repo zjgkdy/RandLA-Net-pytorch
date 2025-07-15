@@ -84,7 +84,7 @@ class SemanticKitti(Dataset):
                  transform=False,
                  drop_few_static_frames=False):
         # save deats
-        self.root = os.path.join(root, "sequences")
+        self.root = root
         self.sequences = sequences
         self.labels = labels
         self.residual_aug = residual_aug

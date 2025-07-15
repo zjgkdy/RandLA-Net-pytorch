@@ -6,3 +6,5 @@ utils/cpp_wrappers/*/build
 utils/cpp_wrappers/*/*.so
 data
 .vscode
+config
+build

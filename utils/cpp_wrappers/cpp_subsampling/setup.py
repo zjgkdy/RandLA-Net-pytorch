@@ -1,29 +1,26 @@
-from distutils.core import setup, Extension
-import numpy.distutils.misc_util
+from setuptools import setup, Extension
+import numpy
 
-# Adding OpenCV to project
-# ************************
-
-# Adding sources of the project
-# *****************************
-
+# 模块名称
 m_name = "grid_subsampling"
 
-SOURCES = ["../cpp_utils/cloud/cloud.cpp",
-           "grid_subsampling/grid_subsampling.cpp",
-           "wrapper.cpp"]
+# C++源码路径
+SOURCES = [
+    "../cpp_utils/cloud/cloud.cpp",
+    "grid_subsampling/grid_subsampling.cpp",
+    "wrapper.cpp"
+]
 
-module = Extension(m_name,
-                   sources=SOURCES,
-                   extra_compile_args=['-std=c++11',
-                                       '-D_GLIBCXX_USE_CXX11_ABI=0'])
+# 创建扩展模块
+module = Extension(
+    m_name,
+    sources=SOURCES,
+    include_dirs=[numpy.get_include()],
+    extra_compile_args=['-std=c++11', '-D_GLIBCXX_USE_CXX11_ABI=0']
+)
 
-setup(ext_modules=[module], include_dirs=numpy.distutils.misc_util.get_numpy_include_dirs())
-
-
-
-
-
-
-
-
+# 构建
+setup(
+    name=m_name,
+    ext_modules=[module]
+)

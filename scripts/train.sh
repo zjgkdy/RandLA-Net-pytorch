@@ -1,10 +1,20 @@
 #!/bin/bash
+Task=movable
+DatasetCfg=config/semantic-kitti-movable.yaml
+Dataset=data/SemanticKITTI/sequences_0.06
+LogsDir=./runs   
+Name=test
+BatchSize=6
+NumWorkers=8
+
+export DEBUG=1
+export CUDA_VISIBLE_DEVICES=1
 
 python train.py \
-    --task movable \
-    --dataset_cfg config/semantic-kitti.yaml \
-    --dataset data/semantic_kitti \
-    --logs_dir ./runs \
-    --name test \
-    --batch_size 6 \
-    --num_workers 8
+    --task $Task \
+    --dataset_cfg $DatasetCfg \
+    --dataset $Dataset \
+    --logs_dir $LogsDir \
+    --name $Name \
+    --batch_size $BatchSize \
+    --num_workers $NumWorkers

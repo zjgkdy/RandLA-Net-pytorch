@@ -4,17 +4,33 @@ import torch
 from torch.utils.data import Dataset
 
 class SemanticKITTIDataset(Dataset):
-    def __init__(self, root_dir, DATA, CFG, split="train", transform=None):
+    def __init__(self, root_dir, TASK, DATA, CFG, device="cpu", split="train", transform=None):
+        if TASK == "movable":
+            self.learning_map = DATA["movable_learning_map"]
+            self.learning_map_inv = DATA["movable_learning_map_inv"]
+        elif TASK == "semantic":
+            self.learning_map = DATA["learning_map"]
+            self.learning_map_inv = DATA["learning_map_inv"]
+
+        self.raw_label_map = DATA["labels"]
+        self.new_label_map = {k: self.raw_label_map[v] for k, v in self.learning_map_inv.items()}
         self.color_map = DATA["color_map"]
-        self.movable_learning_map = DATA["movable_learning_map"]
-        self.movable_learning_map_inv = DATA["movable_learning_map_inv"]
-        self.root_dir = root_dir
         self.train_sequences = DATA["split"]["train"]
         self.valid_sequences = DATA["split"]["valid"]
-        self.ignore_index = DATA["ignore_index"]
+        self.learning_ignore = DATA["learning_ignore"]
+
+        self.root_dir = root_dir
         self.num_points = CFG.num_points
+        self.num_classes = len(self.learning_map_inv)
         self.split = split
         self.transform = transform
+
+        content_raw = DATA["content"]
+        content_mapped = [0.0 for i in range(self.num_classes)]
+        for raw_label, mapped_label in self.learning_map.items():
+            content_mapped[mapped_label] += content_raw.get(raw_label, 0.0)
+        self.content_tensor = torch.tensor(content_mapped, dtype=torch.float32, device=device)
+        self.weights = 1.0 / (self.content_tensor + 0.02)
 
         self.point_paths = []
         self.label_paths = []
@@ -23,11 +39,11 @@ class SemanticKITTIDataset(Dataset):
             data_sequences = self.train_sequences
         elif self.split == "valid":
             data_sequences = self.valid_sequences
-             
+        
         for seq in data_sequences:
                 seq = f"{int(seq):02d}"
-                scan_dir = os.path.join(root_dir, "sequences", seq, "velodyne")
-                label_dir = os.path.join(root_dir, "sequences", seq, "labels")
+                scan_dir = os.path.join(root_dir, seq, "velodyne")
+                label_dir = os.path.join(root_dir, seq, "labels")
                 for fname in sorted(os.listdir(scan_dir)):
                     if fname.endswith(".bin"):
                         self.point_paths.append(os.path.join(scan_dir, fname))
@@ -59,14 +75,16 @@ class SemanticKITTIDataset(Dataset):
         inst_labels = (labels >> 16).astype(np.int16)
 
         # 应用标签映射
-        if self.movable_learning_map:
-            sem_labels = np.vectorize(lambda x: self.movable_learning_map.get(x, self.ignore_index))(sem_labels)
+        if self.learning_map:
+            sem_labels = np.vectorize(lambda x: self.learning_map.get(x, 0))(sem_labels)
 
         if self.transform:
             points, sem_labels = self.transform(points, sem_labels)
 
         # 随机采样固定点数：
-        if self.split == "train":
+        if self.split == "train":            
+            points, sem_labels = self.random_sample(points, sem_labels)
+        elif self.split == "valid":
             points, sem_labels = self.random_sample(points, sem_labels)
 
         return {

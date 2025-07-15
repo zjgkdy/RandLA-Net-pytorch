@@ -1,9 +1,11 @@
+import os
 import argparse
 from datetime import datetime
 import json
 import numpy as np
 from pathlib import Path
 import time
+import torch.utils
 from tqdm import tqdm
 import warnings
 
@@ -11,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
+import torch.distributed as dist
 
 from data import data_loaders
 from model import RandLANet
@@ -19,6 +22,17 @@ from utils.metrics import accuracy, intersection_over_union
 from utils.utils import load_yaml, compute_avg_grad_norm, get_learning_rate
 
 from common.dataset.kitti.kittiDataset import SemanticKITTIDataset
+
+def init_distributed_mode(args):
+    if'RANK'in os.environ and'WORLD_SIZE'in os.environ:  
+        args.rank = int(os.environ["RANK"])
+        args.local_rank = int(os.environ['LOCAL_RANK'])
+        args.world_size = int(os.environ['WORLD_SIZE'])
+        args.gpu = torch.device(f"cuda:{args.local_rank}")
+    else:
+        print('Not using distributed mode')
+        args.distributed = False
+    return
 
 def evaluate(model, loader, criterion, device):
     model.eval()
@@ -38,35 +52,46 @@ def evaluate(model, loader, criterion, device):
 
 
 def train(args):
-    train_path = args.dataset / args.train_dir
-    val_path = args.dataset / args.val_dir
+    if args.distributed:
+        torch.cuda.set_device(args.local_rank)
+        dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=args.rank)
+
     logs_dir = args.logs_dir / args.name
-    logs_dir.mkdir(exist_ok=True, parents=True)
+    if args.distributed:
+        if args.rank == 0:
+            logs_dir.mkdir(exist_ok=True, parents=True)
+        dist.barrier()  # 等待rank 0创建完目录后，其他rank才能继续
+    else:
+        logs_dir.mkdir(exist_ok=True, parents=True)
     
-    # determine number of classes
-    try:
-        DATA = load_yaml(args.dataset_cfg)
-        if args.task == "movable":
-            learning_classes = [k for k, v in DATA["learning_ignore"].items() if not v]
-            num_classes = len(learning_classes)
-    except FileNotFoundError:
-        num_classes = int(input("Number of distinct classes in the dataset: "))
+    # 加载数据集
+    DATA = load_yaml(args.dataset_cfg)
+    train_dataset = SemanticKITTIDataset(args.dataset, args.task, DATA, cfg, args.gpu, split="train")
+    valid_dataset = SemanticKITTIDataset(args.dataset, args.task, DATA, cfg, args.gpu, split="valid")
+    num_classes = train_dataset.num_classes
 
+    if args.distributed:
+        # 给每个rank对应的GPU进程分配训练的样本索引
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
+        val_sampler = torch.utils.data.distributed.DistributedSampler(valid_dataset, shuffle=False)
+    else:
+        # 非分布式训练，直接使用随机或顺序采样器
+        train_sampler = torch.utils.data.RandomSampler(train_dataset)
+        val_sampler = torch.utils.data.SequentialSampler(valid_dataset)
 
-    train_dataset = SemanticKITTIDataset(args.dataset, DATA, cfg, split="train")
-    valid_dataset = SemanticKITTIDataset(args.dataset, DATA, cfg, split="valid")
+    # 将样本索引组成batch
+    train_batch_sampler = torch.utils.data.BatchSampler(train_sampler, args.batch_size, drop_last=True)
+    val_batch_sampler = torch.utils.data.BatchSampler(val_sampler, args.batch_size, drop_last=False)
 
     trainLoader = torch.utils.data.DataLoader(train_dataset,
-                                             batch_size=args.batch_size,    
-                                             shuffle=True,                  # 在每个epoch开始时打乱数据
-                                             num_workers=args.num_workers, 
-                                             pin_memory=True,)
+                                             batch_sampler=train_batch_sampler,    
+                                             pin_memory=True,
+                                             num_workers=args.num_workers,)
 
     validLoader = torch.utils.data.DataLoader(valid_dataset,
-                                             batch_size=1,    
-                                             shuffle=False,                  
-                                             num_workers=args.num_workers, 
-                                             pin_memory=True,)
+                                             batch_sampler=val_batch_sampler,    
+                                             pin_memory=True,
+                                             num_workers=args.num_workers,)
 
     d_in = next(iter(train_dataset))["points"].size(-1)
 
@@ -78,17 +103,24 @@ def train(args):
         device=args.gpu
     )
 
-    print('Computing weights...', end='\t')
-    samples_per_class = np.array(cfg.class_weights)
+    if args.distributed:
+        if args.rank == 0:
+            print('Classes Weights:', train_dataset.weights)
+            print("Initialized in main process")
+        for name, param in model.state_dict().items():
+            torch.distributed.broadcast(param, src=0)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+    else:
+        print('Classes Weights:', train_dataset.weights)
 
-    n_samples = torch.tensor(cfg.class_weights, dtype=torch.float, device=args.gpu)
-    ratio_samples = n_samples / n_samples.sum()
-    weights = 1 / (ratio_samples + 0.02)
-
-    print('Done.')
-    print('Weights:', weights)
-    criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=DATA["ignore_index"])
-
+    # print('Computing weights...', end='\t')
+    # samples_per_class = np.array(cfg.class_weights)
+    # n_samples = torch.tensor(cfg.class_weights, dtype=torch.float, device=args.gpu)
+    # ratio_samples = n_samples / n_samples.sum()
+    # weights = 1 / (ratio_samples + 0.02)
+    # print('Done.')
+    
+    criterion = nn.CrossEntropyLoss(weight=train_dataset.weights, ignore_index=0)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.adam_lr)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, args.scheduler_gamma)
 
@@ -102,130 +134,126 @@ def train(args):
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
-    with SummaryWriter(logs_dir) as writer:
-        for epoch in range(first_epoch, args.epochs+1):
-            print(f'=== EPOCH {epoch:d}/{args.epochs:d} ===')
-            t0 = time.time()
-            # Train
-            model.train()
+    if args.distributed:
+        if args.rank == 0:
+            writer = SummaryWriter(logs_dir)
+        else:
+            writer = None
+    else:
+        writer = SummaryWriter(logs_dir)
 
-            # metrics
-            losses = []
-            accuracies = []
-            ious = []
+    for epoch in range(first_epoch, args.epochs+1):
+        print(f'=== EPOCH {epoch:d}/{args.epochs:d} ===')
+        t0 = time.time()
+        if args.distributed:
+            train_sampler.set_epoch(epoch)
+        model.train()
+        losses = []
+        accuracies = []
+        ious = []
 
-            # iterate over dataset
-            for i, input_dict in enumerate(tqdm(trainLoader, desc='Training', leave=False)):
-                points = input_dict["points"].to(args.gpu)
-                labels = input_dict["labels"].to(args.gpu)
-                optimizer.zero_grad()
+        # iterate over dataset
+        for i, input_dict in enumerate(tqdm(trainLoader, desc='Training', leave=False)):
+            points = input_dict["points"].to(args.gpu)
+            labels = input_dict["labels"].to(args.gpu)
+            optimizer.zero_grad()
+        
+            logp = model(points)
+            scores = F.softmax(logp, dim=-1) 
+            loss = criterion(logp, labels)
+            loss.backward()
+            optimizer.step()
+            loss_value = loss.cpu().item()
+            acc_list = accuracy(scores, labels)
+            iou_list = intersection_over_union(scores, labels)
 
-                logp = model(points)
-                scores = F.softmax(logp, dim=-1) 
+            losses.append(loss_value)
+            accuracies.append(acc_list)
+            ious.append(iou_list)
 
-                # logp = torch.distributions.utils.probs_to_logits(scores, is_binary=False)
-                loss = criterion(logp, labels)
-                # logpy = torch.gather(logp, 1, labels)
-                # loss = -(logpy).mean()
+            if i % 50 == 0 and writer != None:
+                avg_grad_norm = compute_avg_grad_norm(model)
+                current_lr = get_learning_rate(optimizer)
+ 
+                writer.add_scalar("Train/Loss", loss_value, i)   
+                writer.add_scalar("Train/GradNorm", avg_grad_norm, i)
+                writer.add_scalar("Train/LearningRate", current_lr, i)
+                print(f"[Epoch {epoch:03d} | Iter {i:04d}] ",
+                        f"Loss: {loss_value:.4f} | ",
+                        f"GradNorm: {avg_grad_norm:.6f} | ",
+                        f"LR: {current_lr:.6f}",)
+        
+        scheduler.step()
+        
+        if epoch % 5 != 0:
+            continue
+        
+        accs = np.nanmean(np.array(accuracies), axis=0)
+        ious = np.nanmean(np.array(ious), axis=0)
+        val_loss, val_accs, val_ious = evaluate(
+            model,
+            validLoader,
+            criterion,
+            args.gpu
+        )
+        loss_dict = {
+            'Training loss':    np.mean(losses),
+            'Validation loss':  val_loss
+        }
+        acc_dicts = [
+            {
+                'Training accuracy': acc,
+                'Validation accuracy': val_acc
+            } for acc, val_acc in zip(accs, val_accs)
+        ]
+        iou_dicts = [
+            {
+                'Training accuracy': iou,
+                'Validation accuracy': val_iou
+            } for iou, val_iou in zip(ious, val_ious)
+        ]
 
-                loss.backward()
+        t1 = time.time()
+        d = t1 - t0
+        # Display results
+        for k, v in loss_dict.items():
+            print(f'{k}: {v:.7f}', end='\t')
+        print()
+        
+        print('Accuracy     ', *[f'{train_dataset.new_label_map[cls_idx]}' for cls_idx in range(num_classes)], '   OA', sep=' | ')
+        print('Training:    ', *[f'{acc:.3f}' if not np.isnan(acc) else '  nan' for acc in accs], sep=' | ')
+        print('Validation:  ', *[f'{acc:.3f}' if not np.isnan(acc) else '  nan' for acc in val_accs], sep=' | ')
 
-                optimizer.step()
+        print('IoU          ', *[f'{train_dataset.new_label_map[cls_idx]}' for cls_idx in range(num_classes)], ' mIoU', sep=' | ')
+        print('Training:    ', *[f'{iou:.3f}' if not np.isnan(iou) else '  nan' for iou in ious], sep=' | ')
+        print('Validation:  ', *[f'{iou:.3f}' if not np.isnan(iou) else '  nan' for iou in val_ious], sep=' | ')
 
-                loss_value = loss.cpu().item()
-                acc_list = accuracy(scores, labels)
-                iou_list = intersection_over_union(scores, labels)
+        print('Time elapsed:', '{:.0f} s'.format(d) if d < 60 else '{:.0f} min {:02.0f} s'.format(*divmod(d, 60)))
 
-                losses.append(loss_value)
-                accuracies.append(acc_list)
-                ious.append(iou_list)
+        # send results to tensorboard
+        writer.add_scalars('Loss', loss_dict, epoch)
 
-                if i % 100 == 0:
-                    avg_grad_norm = compute_avg_grad_norm(model)
-                    current_lr = get_learning_rate(optimizer)
-                    for cls_idx in range(num_classes):
-                        cls_name = "unmovable" if cls_idx == 0 else "movable"
-                        writer.add_scalar(f'Train/Per-class accuracy/{cls_name}', acc_list[cls_idx], i)
-                        writer.add_scalar(f'Train/Per-class IoU/{cls_name}', iou_list[cls_idx], i)
-                    writer.add_scalar("Train/Loss", loss_value, i)   
-                    writer.add_scalar("Train/GradNorm", avg_grad_norm, i)
-                    writer.add_scalar("Train/LearningRate", current_lr, i)
-                    print(f"[Epoch {epoch:03d} | Iter {i:04d}] ",
-                          f"Loss: {loss_value:.4f} | ",
-                          f"GradNorm: {avg_grad_norm:.6f} | ",
-                          f"LR: {current_lr:.6f} | ",
-                          f"ACC: ", *[f'{acc:.3f}' if not np.isnan(acc) else '  nan' for acc in acc_list],
-                          f" | IOU: ", *[f'{iou:.3f}' if not np.isnan(iou) else '  nan' for iou in iou_list],)
-            
-            scheduler.step()
-
-            if (epoch+1) % 5 !=0:
-                continue
-
-            accs = np.nanmean(np.array(accuracies), axis=0)
-            ious = np.nanmean(np.array(ious), axis=0)
-
-            val_loss, val_accs, val_ious = evaluate(
-                model,
-                validLoader,
-                criterion,
-                args.gpu
+        for cls_idx in range(num_classes):
+            cls_name = train_dataset.new_label_map[cls_idx]
+            writer.add_scalars(f'Per-class accuracy/{cls_name}', acc_dicts[i], epoch)
+            writer.add_scalars(f'Per-class IoU/{cls_name}', iou_dicts[i], epoch)
+        writer.add_scalars('Per-class accuracy/Overall', acc_dicts[-1], epoch)
+        writer.add_scalars('Per-class IoU/Mean IoU', iou_dicts[-1], epoch) 
+        
+        if epoch % args.save_freq == 0:
+            torch.save(
+                dict(
+                    epoch=epoch,
+                    model_state_dict=model.state_dict(),
+                    optimizer_state_dict=optimizer.state_dict(),
+                    scheduler_state_dict=scheduler.state_dict()
+                ),
+                args.logs_dir / args.name / f'checkpoint_{epoch:02d}.pth'
             )
-
-            loss_dict = {
-                'Training loss':    np.mean(losses),
-                'Validation loss':  val_loss
-            }
-            acc_dicts = [
-                {
-                    'Training accuracy': acc,
-                    'Validation accuracy': val_acc
-                } for acc, val_acc in zip(accs, val_accs)
-            ]
-            iou_dicts = [
-                {
-                    'Training accuracy': iou,
-                    'Validation accuracy': val_iou
-                } for iou, val_iou in zip(ious, val_ious)
-            ]
-
-            t1 = time.time()
-            d = t1 - t0
-            # Display results
-            for k, v in loss_dict.items():
-                print(f'{k}: {v:.7f}', end='\t')
-            print()
-
-            print('Accuracy     ', *[f'{i:>5d}' for i in range(num_classes)], '   OA', sep=' | ')
-            print('Training:    ', *[f'{acc:.3f}' if not np.isnan(acc) else '  nan' for acc in accs], sep=' | ')
-            print('Validation:  ', *[f'{acc:.3f}' if not np.isnan(acc) else '  nan' for acc in val_accs], sep=' | ')
-
-            print('IoU          ', *[f'{i:>5d}' for i in range(num_classes)], ' mIoU', sep=' | ')
-            print('Training:    ', *[f'{iou:.3f}' if not np.isnan(iou) else '  nan' for iou in ious], sep=' | ')
-            print('Validation:  ', *[f'{iou:.3f}' if not np.isnan(iou) else '  nan' for iou in val_ious], sep=' | ')
-
-            print('Time elapsed:', '{:.0f} s'.format(d) if d < 60 else '{:.0f} min {:02.0f} s'.format(*divmod(d, 60)))
-
-            # send results to tensorboard
-            writer.add_scalars('Loss', loss_dict, epoch)
-
-            for i in range(num_classes):
-                writer.add_scalars(f'Per-class accuracy/{i+1:02d}', acc_dicts[i], epoch)
-                writer.add_scalars(f'Per-class IoU/{i+1:02d}', iou_dicts[i], epoch)
-            writer.add_scalars('Per-class accuracy/Overall', acc_dicts[-1], epoch)
-            writer.add_scalars('Per-class IoU/Mean IoU', iou_dicts[-1], epoch)
-
-            if epoch % args.save_freq == 0:
-                torch.save(
-                    dict(
-                        epoch=epoch,
-                        model_state_dict=model.state_dict(),
-                        optimizer_state_dict=optimizer.state_dict(),
-                        scheduler_state_dict=scheduler.state_dict()
-                    ),
-                    args.logs_dir / args.name / f'checkpoint_{epoch:02d}.pth'
-                )
-
+            
+    if writer is not None:
+        writer.close()
+        
 
 if __name__ == '__main__':
 
@@ -265,16 +293,12 @@ if __name__ == '__main__':
     param.add_argument('--scheduler_gamma', type=float, help='gamma of the learning rate scheduler',
                         default=0.95)
 
-    dirs.add_argument('--test_dir', type=str, help='location of the test set in the dataset dir',
-                        default='test')
-    dirs.add_argument('--train_dir', type=str, help='location of the training set in the dataset dir',
-                        default='train')
-    dirs.add_argument('--val_dir', type=str, help='location of the validation set in the dataset dir',
-                        default='val')
     dirs.add_argument('--logs_dir', type=Path, help='path to tensorboard logs',
                         default='runs')
 
-    misc.add_argument('--gpu', type=int, help='which GPU to use (-1 for CPU)',
+    misc.add_argument('--local_rank', type=int, help='local rank for distributed training',
+                        default=0)
+    misc.add_argument('--gpu', type=int, help='which GPU to use (-1 for CPU)', 
                         default=0)
     misc.add_argument('--name', type=str, help='name of the experiment',
                         default=None)
@@ -293,6 +317,12 @@ if __name__ == '__main__':
             args.gpu = torch.device('cpu')
     else:
         args.gpu = torch.device('cpu')
+
+    if int(os.environ.get("DEBUG", "1")) == 0:
+        args.distributed = True
+        init_distributed_mode(args)
+    else:
+        args.distributed = False
 
     if args.name is None:
         if args.load:

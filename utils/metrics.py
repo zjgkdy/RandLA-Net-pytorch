@@ -26,7 +26,7 @@ def accuracy(scores, labels):
     for label in range(num_classes):
         label_mask = labels == label
         per_class_accuracy = (accuracy_mask & label_mask).float().sum()
-        per_class_accuracy /= label_mask.float().sum()
+        per_class_accuracy /= (label_mask.float().sum() + 1e-6)
         accuracies.append(per_class_accuracy.cpu().item())
     # overall accuracy
     accuracies.append(accuracy_mask.float().mean().cpu().item())
@@ -56,7 +56,7 @@ def intersection_over_union(scores, labels):
     for label in range(num_classes):
         pred_mask = predictions == label
         labels_mask = labels == label
-        iou = (pred_mask & labels_mask).float().sum() / (pred_mask | labels_mask).float().sum()
+        iou = (pred_mask & labels_mask).float().sum() / ((pred_mask | labels_mask).float().sum() + 1e-6)
         ious.append(iou.cpu().item())
     ious.append(np.nanmean(ious))
     return ious

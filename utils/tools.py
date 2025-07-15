@@ -12,13 +12,13 @@ import cpp_wrappers.cpp_subsampling.grid_subsampling as cpp_subsampling
 
 class SemanticKITTIConfig:
     num_points = 40960  # Number of input points
-    sub_grid_size = 0.04  # preprocess_parameter
+    sub_grid_size = 0.06  # preprocess_parameter
 
     train_steps = 200  # Number of steps per epochs
     val_steps = 100    # Number of validation steps per epoch
 
     sampling_type = 'active_learning'
-    class_weights = [40, 1] # The ratio of unmovable to movable
+    # class_weights = [40, 1] # The ratio of unmovable to movable
  
 
 class Config:
