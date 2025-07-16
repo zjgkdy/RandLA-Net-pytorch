@@ -18,7 +18,7 @@ import torch.distributed as dist
 from data import data_loaders
 from model import RandLANet
 from utils.tools import SemanticKITTIConfig as cfg
-from utils.metrics import accuracy, intersection_over_union
+from utils.metrics import get_accuracy_tensor, get_iou_tensor
 from utils.utils import load_yaml, compute_avg_grad_norm, get_learning_rate
 
 from common.dataset.kitti.kittiDataset import SemanticKITTIDataset
@@ -34,22 +34,87 @@ def init_distributed_mode(args):
         args.distributed = False
     return
 
-def evaluate(model, loader, criterion, device):
+def train_one_epoch(model,
+                    optimizer,
+                    data_loader,
+                    criterion,
+                    writer,
+                    device,
+                    num_classes,
+                    epoch):
+    model.train()
+    loss_list = []
+    acc_sum_tensor = torch.zeros((2, num_classes), dtype=torch.float64, device=device)
+    iou_sum_tensor = torch.zeros((2, num_classes), dtype=torch.float64, device=device)
+    for step, input_dict in enumerate(tqdm(data_loader, desc='Training', leave=False)):
+        points = input_dict["points"].to(device)
+        labels = input_dict["labels"].to(device)
+        optimizer.zero_grad()
+    
+        logp = model(points)
+        scores = F.softmax(logp, dim=-1) 
+        loss = criterion(logp, labels)
+        loss.backward()
+        optimizer.step()
+        
+        mean_loss = reduce_value(loss, average=True)            
+        acc_tensor = reduce_value(get_accuracy_tensor(scores, labels, device=device), average=False)
+        iou_tensor = reduce_value(get_iou_tensor(scores, labels, device=device), average=False)
+        loss_list.append(mean_loss)
+        acc_sum_tensor += acc_tensor
+        iou_sum_tensor += iou_tensor
+
+        if writer != None and step % 50 == 0:
+            global_step = epoch * len(data_loader) + step
+            avg_grad_norm = compute_avg_grad_norm(model)
+            current_lr = get_learning_rate(optimizer)
+            writer.add_scalar("Train/Loss", mean_loss, global_step)   
+            writer.add_scalar("Train/GradNorm", avg_grad_norm, global_step)
+            writer.add_scalar("Train/LearningRate", current_lr, global_step)
+            print(f"[Epoch {epoch:03d} | Iter {step:04d}] ",
+                    f"Loss: {mean_loss:.4f} | ",
+                    f"GradNorm: {avg_grad_norm:.6f} | ",
+                    f"LR: {current_lr:.6f}",)
+    train_loss = torch.mean(torch.tensor(loss_list))
+    train_accs = acc_sum_tensor[0] / acc_sum_tensor[1]
+    train_ious = iou_sum_tensor[0] / iou_sum_tensor[1]
+    
+    return train_loss, train_accs.cpu().numpy(), train_ious.cpu().numpy()
+
+def evaluate(model, loader, criterion, device, num_classes):
     model.eval()
-    losses = []
-    accuracies = []
-    ious = []
+    loss_list = []
+    acc_sum_tensor = torch.zeros((2, num_classes), dtype=torch.float64, device=device)
+    iou_sum_tensor = torch.zeros((2, num_classes), dtype=torch.float64, device=device)
     with torch.no_grad():
         for i, input_dict in enumerate(tqdm(loader, desc='Validation', leave=False)):
-            points = input_dict["points"].to(args.gpu)
-            labels = input_dict["labels"].to(args.gpu)
+            points = input_dict["points"].to(device)
+            labels = input_dict["labels"].to(device)
             scores = model(points)
             loss = criterion(scores, labels)
-            losses.append(loss.cpu().item())
-            accuracies.append(accuracy(scores, labels))
-            ious.append(intersection_over_union(scores, labels))
-    return np.mean(losses), np.nanmean(np.array(accuracies), axis=0), np.nanmean(np.array(ious), axis=0)
+            mean_loss = reduce_value(loss, average=True)            
+            acc_tensor = reduce_value(get_accuracy_tensor(scores, labels, device=device), average=False)
+            iou_tensor = reduce_value(get_iou_tensor(scores, labels, device=device), average=False)
+            loss_list.append(mean_loss)
+            acc_sum_tensor += acc_tensor
+            iou_sum_tensor += iou_tensor
+            
+        val_loss = torch.mean(torch.tensor(loss_list))
+        val_accs = acc_sum_tensor[0] / acc_sum_tensor[1]
+        val_ious = iou_sum_tensor[0] / iou_sum_tensor[1]
+        
+    return val_loss, val_accs.cpu().numpy(), val_ious.cpu().numpy()
 
+def reduce_value(value, average=True):
+    world_size = int(os.environ.get('WORLD_SIZE', 1))    
+    if world_size < 2:
+        return value
+    else:
+        with torch.no_grad():
+            dist.all_reduce(value)
+            if average:
+                value /= world_size
+        return value
 
 def train(args):
     if args.distributed:
@@ -143,113 +208,83 @@ def train(args):
         writer = SummaryWriter(logs_dir)
 
     for epoch in range(first_epoch, args.epochs+1):
-        print(f'=== EPOCH {epoch:d}/{args.epochs:d} ===')
         t0 = time.time()
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        model.train()
-        losses = []
-        accuracies = []
-        ious = []
-
-        # iterate over dataset
-        for i, input_dict in enumerate(tqdm(trainLoader, desc='Training', leave=False)):
-            points = input_dict["points"].to(args.gpu)
-            labels = input_dict["labels"].to(args.gpu)
-            optimizer.zero_grad()
         
-            logp = model(points)
-            scores = F.softmax(logp, dim=-1) 
-            loss = criterion(logp, labels)
-            loss.backward()
-            optimizer.step()
-            loss_value = loss.cpu().item()
-            acc_list = accuracy(scores, labels)
-            iou_list = intersection_over_union(scores, labels)
-
-            losses.append(loss_value)
-            accuracies.append(acc_list)
-            ious.append(iou_list)
-
-            if i % 50 == 0 and writer != None:
-                avg_grad_norm = compute_avg_grad_norm(model)
-                current_lr = get_learning_rate(optimizer)
- 
-                writer.add_scalar("Train/Loss", loss_value, i)   
-                writer.add_scalar("Train/GradNorm", avg_grad_norm, i)
-                writer.add_scalar("Train/LearningRate", current_lr, i)
-                print(f"[Epoch {epoch:03d} | Iter {i:04d}] ",
-                        f"Loss: {loss_value:.4f} | ",
-                        f"GradNorm: {avg_grad_norm:.6f} | ",
-                        f"LR: {current_lr:.6f}",)
+        if writer != None:
+            print(f'=== EPOCH {epoch:d}/{args.epochs:d} ===')
+        
+        train_loss, train_accs, train_ious = train_one_epoch(model=model,
+                                                           optimizer=optimizer,
+                                                           data_loader=trainLoader,
+                                                           criterion=criterion,
+                                                           writer=writer,
+                                                           device=args.gpu,
+                                                           num_classes=num_classes,
+                                                           epoch=epoch)
         
         scheduler.step()
-        
-        if epoch % 5 != 0:
-            continue
-        
-        accs = np.nanmean(np.array(accuracies), axis=0)
-        ious = np.nanmean(np.array(ious), axis=0)
-        val_loss, val_accs, val_ious = evaluate(
-            model,
-            validLoader,
-            criterion,
-            args.gpu
-        )
-        loss_dict = {
-            'Training loss':    np.mean(losses),
-            'Validation loss':  val_loss
-        }
-        acc_dicts = [
-            {
-                'Training accuracy': acc,
-                'Validation accuracy': val_acc
-            } for acc, val_acc in zip(accs, val_accs)
-        ]
-        iou_dicts = [
-            {
-                'Training accuracy': iou,
-                'Validation accuracy': val_iou
-            } for iou, val_iou in zip(ious, val_ious)
-        ]
+        val_loss, val_accs, val_ious = evaluate(model=model,
+                                                loader=validLoader,
+                                                criterion=criterion,
+                                                device=args.gpu,
+                                                num_classes=num_classes)
+        if writer != None:
+            loss_dict = {
+                'Training loss':    train_loss,
+                'Validation loss':  val_loss
+            }
+            acc_dicts = [
+                {
+                    'Training accuracy': acc,
+                    'Validation accuracy': val_acc
+                } for acc, val_acc in zip(train_accs, val_accs)
+            ]
+            iou_dicts = [
+                {
+                    'Training accuracy': iou,
+                    'Validation accuracy': val_iou
+                } for iou, val_iou in zip(train_ious, val_ious)
+            ]
 
-        t1 = time.time()
-        d = t1 - t0
-        # Display results
-        for k, v in loss_dict.items():
-            print(f'{k}: {v:.7f}', end='\t')
-        print()
-        
-        print('Accuracy     ', *[f'{train_dataset.new_label_map[cls_idx]}' for cls_idx in range(num_classes)], '   OA', sep=' | ')
-        print('Training:    ', *[f'{acc:.3f}' if not np.isnan(acc) else '  nan' for acc in accs], sep=' | ')
-        print('Validation:  ', *[f'{acc:.3f}' if not np.isnan(acc) else '  nan' for acc in val_accs], sep=' | ')
+            t1 = time.time()
+            d = t1 - t0
+            # Display results
+            for k, v in loss_dict.items():
+                print(f'{k}: {v:.7f}', end='\t')
+            print()
+            
+            print('Accuracy     ', *[f'{train_dataset.new_label_map[cls_idx]}' for cls_idx in range(num_classes)], '   OA', sep=' | ')
+            print('Training:    ', *[f'{acc:.3f}' if not np.isnan(acc) else '  nan' for acc in train_accs], f'{np.nanmean(train_accs):.3f}', sep=' | ')
+            print('Validation:  ', *[f'{acc:.3f}' if not np.isnan(acc) else '  nan' for acc in val_accs], f'{np.nanmean(val_accs):.3f}', sep=' | ')
 
-        print('IoU          ', *[f'{train_dataset.new_label_map[cls_idx]}' for cls_idx in range(num_classes)], ' mIoU', sep=' | ')
-        print('Training:    ', *[f'{iou:.3f}' if not np.isnan(iou) else '  nan' for iou in ious], sep=' | ')
-        print('Validation:  ', *[f'{iou:.3f}' if not np.isnan(iou) else '  nan' for iou in val_ious], sep=' | ')
+            print('IoU          ', *[f'{train_dataset.new_label_map[cls_idx]}' for cls_idx in range(num_classes)], ' mIoU', sep=' | ')
+            print('Training:    ', *[f'{iou:.3f}' if not np.isnan(iou) else '  nan' for iou in train_ious], f'{np.nanmean(train_ious):.3f}', sep=' | ')
+            print('Validation:  ', *[f'{iou:.3f}' if not np.isnan(iou) else '  nan' for iou in val_ious], f'{np.nanmean(val_ious):.3f}', sep=' | ')
 
-        print('Time elapsed:', '{:.0f} s'.format(d) if d < 60 else '{:.0f} min {:02.0f} s'.format(*divmod(d, 60)))
+            print('Time elapsed:', '{:.0f} s'.format(d) if d < 60 else '{:.0f} min {:02.0f} s'.format(*divmod(d, 60)))
 
-        # send results to tensorboard
-        writer.add_scalars('Loss', loss_dict, epoch)
+            # send results to tensorboard
+            writer.add_scalars('Loss', loss_dict, epoch)
 
-        for cls_idx in range(num_classes):
-            cls_name = train_dataset.new_label_map[cls_idx]
-            writer.add_scalars(f'Per-class accuracy/{cls_name}', acc_dicts[i], epoch)
-            writer.add_scalars(f'Per-class IoU/{cls_name}', iou_dicts[i], epoch)
-        writer.add_scalars('Per-class accuracy/Overall', acc_dicts[-1], epoch)
-        writer.add_scalars('Per-class IoU/Mean IoU', iou_dicts[-1], epoch) 
-        
-        if epoch % args.save_freq == 0:
-            torch.save(
-                dict(
-                    epoch=epoch,
-                    model_state_dict=model.state_dict(),
-                    optimizer_state_dict=optimizer.state_dict(),
-                    scheduler_state_dict=scheduler.state_dict()
-                ),
-                args.logs_dir / args.name / f'checkpoint_{epoch:02d}.pth'
-            )
+            for cls_idx in range(num_classes):
+                cls_name = train_dataset.new_label_map[cls_idx]
+                writer.add_scalars(f'Per-class accuracy/{cls_name}', acc_dicts[cls_idx], epoch)
+                writer.add_scalars(f'Per-class IoU/{cls_name}', iou_dicts[cls_idx], epoch)
+            writer.add_scalars('Per-class accuracy/Overall', acc_dicts[-1], epoch)
+            writer.add_scalars('Per-class IoU/Mean IoU', iou_dicts[-1], epoch) 
+            
+            if epoch % args.save_freq == 0:
+                torch.save(
+                    dict(
+                        epoch=epoch,
+                        model_state_dict=model.state_dict(),
+                        optimizer_state_dict=optimizer.state_dict(),
+                        scheduler_state_dict=scheduler.state_dict()
+                    ),
+                    args.logs_dir / args.name / f'checkpoint_{epoch:02d}.pth'
+                )
             
     if writer is not None:
         writer.close()

@@ -185,6 +185,8 @@ class RandLANet(nn.Module):
     def __init__(self, d_in, num_classes, num_neighbors=16, decimation=4, device=torch.device('cpu')):
         super(RandLANet, self).__init__()
         # self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.d_in = d_in
+        self.num_classes = num_classes
         self.num_neighbors = num_neighbors
         self.decimation = decimation
 
