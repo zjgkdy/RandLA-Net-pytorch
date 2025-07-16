@@ -4,8 +4,8 @@ DatasetCfg=config/semantic-kitti.yaml
 Dataset=data/SemanticKITTI/sequences
 LogsDir=./runs   
 Name=test
-BatchSize=6
-NumWorkers=8
+BatchSize=4
+NumWorkers=4
 
 export DEBUG=0
 export CUDA_VISIBLE_DEVICES=1,2,3

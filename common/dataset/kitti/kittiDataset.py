@@ -64,6 +64,9 @@ class SemanticKITTIDataset(Dataset):
     def __getitem__(self, idx):
         # 加载点云
         point_path = self.point_paths[idx]
+        path_info = point_path.split("/")
+        seq = path_info[-3]
+        filename = os.path.splitext(path_info[-1])[0]
         points = np.fromfile(point_path, dtype=np.float32).reshape(-1, 4)  # x, y, z, intensity
 
         # 加载标签
@@ -88,6 +91,8 @@ class SemanticKITTIDataset(Dataset):
             points, sem_labels = self.random_sample(points, sem_labels)
 
         return {
+            'seq': seq,
+            'filename': filename,
             'points': torch.from_numpy(points),       # (N, 4)
             'labels': torch.from_numpy(sem_labels)         # (N,)
         }

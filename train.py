@@ -19,7 +19,7 @@ from data import data_loaders
 from model import RandLANet
 from utils.tools import SemanticKITTIConfig as cfg
 from utils.metrics import get_accuracy_tensor, get_iou_tensor
-from utils.utils import load_yaml, compute_avg_grad_norm, get_learning_rate
+from utils.utils import load_yaml, compute_avg_grad_norm, get_learning_rate, viz_pointcloud_with_labels
 
 from common.dataset.kitti.kittiDataset import SemanticKITTIDataset
 
@@ -60,7 +60,7 @@ def train_one_epoch(model,
         mean_loss = reduce_value(loss, average=True)            
         acc_tensor = reduce_value(get_accuracy_tensor(scores, labels, device=device), average=False)
         iou_tensor = reduce_value(get_iou_tensor(scores, labels, device=device), average=False)
-        loss_list.append(mean_loss)
+        loss_list.append(mean_loss.cpu())
         acc_sum_tensor += acc_tensor
         iou_sum_tensor += iou_tensor
 
@@ -95,7 +95,7 @@ def evaluate(model, loader, criterion, device, num_classes):
             mean_loss = reduce_value(loss, average=True)            
             acc_tensor = reduce_value(get_accuracy_tensor(scores, labels, device=device), average=False)
             iou_tensor = reduce_value(get_iou_tensor(scores, labels, device=device), average=False)
-            loss_list.append(mean_loss)
+            loss_list.append(mean_loss.cpu())
             acc_sum_tensor += acc_tensor
             iou_sum_tensor += iou_tensor
             
@@ -340,7 +340,7 @@ if __name__ == '__main__':
     misc.add_argument('--num_workers', type=int, help='number of threads for loading data',
                         default=8)
     misc.add_argument('--save_freq', type=int, help='frequency of saving checkpoints',
-                        default=10)
+                        default=4)
 
     args = parser.parse_args()
 
