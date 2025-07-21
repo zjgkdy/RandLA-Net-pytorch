@@ -1,18 +1,23 @@
 from utils.data_process import DataProcessing as DP
-from utils.config import ConfigSemanticKITTI as cfg
 from os.path import join
 import numpy as np
 import pickle
 import torch.utils.data as torch_data
 import torch
-
+import importlib
 
 class SemanticKITTI(torch_data.Dataset):
-    def __init__(self, mode, data_list=None):
+    def __init__(self, mode, dataset_path, dataset_cfg, model_cfg, data_list=None):
         self.name = 'SemanticKITTI'
-        self.dataset_path = '/home/luoteng/RandLA-Net-pytorch/data/semantic_kitti/sequences_0.06'
-
-        self.num_classes = cfg.num_classes
+        self.dataset_path = dataset_path
+        self.raw_color_map = dataset_cfg["color_map"]
+        self.learning_map_inv = dataset_cfg["learning_map_inv"]
+        self.color_map = {k: self.raw_color_map[v] for k, v in self.learning_map_inv.items()}
+        
+        self.model_cfg = model_cfg
+        self.sampler = self.model_cfg.sampler
+        self.num_points = self.model_cfg.num_points
+        self.num_classes = self.model_cfg.num_classes
         self.ignored_labels = np.sort([0])
 
         self.mode = mode
@@ -33,21 +38,66 @@ class SemanticKITTI(torch_data.Dataset):
         return len(self.data_list)
 
     def __getitem__(self, item):
-        selected_pc, selected_labels, selected_idx, cloud_ind = self.spatially_regular_gen(item, self.data_list)
-        return selected_pc, selected_labels, selected_idx, cloud_ind
+        selected_pc, selected_labels, selected_idx, cloud_ind, pc_path = self.spatially_regular_gen(item, self.data_list)
+        return selected_pc, selected_labels, selected_idx, cloud_ind, pc_path
 
     def spatially_regular_gen(self, item, data_list):
         # Generator loop
         cloud_ind = item
         pc_path = data_list[cloud_ind]
         pc, tree, labels = self.get_data(pc_path)
-        # crop a small point cloud
-        pick_idx = np.random.choice(len(pc), 1)
-        selected_pc, selected_labels, selected_idx = self.crop_pc(pc, labels, tree, pick_idx)
+        
+        if self.sampler == "crop_sampler":
+            # crop a small point cloud
+            pick_idx = np.random.choice(len(pc), 1)
+            selected_pc, selected_labels, selected_idx = self.crop_pc(pc, labels, tree, pick_idx) # 以 pc[pick_idx] 为中心裁剪局部区域
+        elif self.sampler == "random_sampler":
+            selected_pc, selected_labels, selected_idx = self.random_sample(pc, labels)
+        elif self.sampler == "farthest_point_sampler":
+            selected_pc, selected_labels, selected_idx = self.farthest_point_sample(pc, labels)
+        return selected_pc, selected_labels, selected_idx, np.array([cloud_ind], dtype=np.int32), pc_path
 
-        return selected_pc, selected_labels, selected_idx, np.array([cloud_ind], dtype=np.int32)
+    def farthest_point_sample(self, points, labels):
+        """ Farthest point sampling (FPS) """
+        N = points.shape[0]
+        # 若点数不足num_points，采用随机选择的方式（与random_sample统一）
+        if N <= self.num_points:
+            choice = np.random.choice(N, self.num_points, replace=True)
+            return points[choice], labels[choice], choice
+
+        # 初始化
+        centroids = np.zeros(self.num_points, dtype=np.int32)
+        distance = np.ones(N) * 1e10  # 设置一个非常大的初始值
+        farthest = np.random.randint(0, N)  # 随机选择一个点作为第一个质心
+        for i in range(self.num_points):
+            centroids[i] = farthest  # 记录当前的质心
+            centroid = points[farthest, :]  # 取出当前质心的坐标
+            dist = np.sum((points - centroid) ** 2, axis=-1)  # 计算当前质心与所有点的距离
+            mask = dist < distance  # 更新距离小于当前记录最小距离的点
+            distance[mask] = dist[mask]  # 更新最小距离
+            farthest = np.argmax(distance)  # 选择距离最远的点作为新的质心
+
+        # 返回选择的点
+        return points[centroids], labels[centroids], centroids
+
+    def random_sample(self, points, labels):
+        N = points.shape[0]
+        if N >= self.num_points :
+            choice = np.random.choice(N, self.num_points , replace=False)
+        else:
+            choice = np.random.choice(N, self.num_points , replace=True)
+
+        return points[choice], labels[choice], choice
 
     def get_data(self, file_path):
+        """ Read points, labels and search_tree data.
+
+        Args:
+            file_path (_type_): File pll;ath
+
+        Returns:
+            _type_: _description_
+        """
         seq_id = file_path[0]
         frame_id = file_path[1]
         kd_tree_path = join(self.dataset_path, seq_id, 'KDTree', frame_id + '.pkl')
@@ -60,11 +110,21 @@ class SemanticKITTI(torch_data.Dataset):
         labels = np.squeeze(np.load(label_path))
         return points, search_tree, labels
 
-    @staticmethod
-    def crop_pc(points, labels, search_tree, pick_idx):
+    def crop_pc(self, points, labels, search_tree, pick_idx):
+        """裁剪一块局部区域，以pick_idx点为中心的
+
+        Args:
+            points (_type_): 原始点云
+            labels (_type_): 原始点云标签
+            search_tree (_type_): 搜索树
+            pick_idx (_type_): 中心点索引
+
+        Returns:
+            _type_: _description_
+        """
         # crop a fixed size point cloud for training
         center_point = points[pick_idx, :].reshape(1, -1)
-        select_idx = search_tree.query(center_point, k=cfg.num_points)[1][0]
+        select_idx = search_tree.query(center_point, k=self.model_cfg.num_points)[1][0]
         select_idx = DP.shuffle_idx(select_idx)
         select_points = points[select_idx]
         select_labels = labels[select_idx]
@@ -77,15 +137,15 @@ class SemanticKITTI(torch_data.Dataset):
         input_pools = []
         input_up_samples = []
 
-        for i in range(cfg.num_layers):
-            neighbour_idx = DP.knn_search(batch_pc, batch_pc, cfg.k_n)
-            sub_points = batch_pc[:, :batch_pc.shape[1] // cfg.sub_sampling_ratio[i], :]
-            pool_i = neighbour_idx[:, :batch_pc.shape[1] // cfg.sub_sampling_ratio[i], :]
-            up_i = DP.knn_search(sub_points, batch_pc, 1)
-            input_points.append(batch_pc)
-            input_neighbors.append(neighbour_idx)
-            input_pools.append(pool_i)
-            input_up_samples.append(up_i)
+        for i in range(self.model_cfg.num_layers):
+            neighbour_idx = DP.knn_search(batch_pc, batch_pc, self.model_cfg.k_n) # 近邻点索引集
+            sub_points = batch_pc[:, :batch_pc.shape[1] // self.model_cfg.sub_sampling_ratio[i], :] # 降采样点集
+            pool_i = neighbour_idx[:, :batch_pc.shape[1] // self.model_cfg.sub_sampling_ratio[i], :] # 降采样近邻点索引集：降采样点对原始点
+            up_i = DP.knn_search(sub_points, batch_pc, 1) # 上采样近邻点索引集：原始点对降采样点，用于上采样恢复特征
+            input_points.append(batch_pc) # 输入点集
+            input_neighbors.append(neighbour_idx) # 输入近邻点集
+            input_pools.append(pool_i) # 降采样近邻点集
+            input_up_samples.append(up_i) # 上采样近邻点集
             batch_pc = sub_points
 
         input_list = input_points + input_neighbors + input_pools + input_up_samples
@@ -94,13 +154,13 @@ class SemanticKITTI(torch_data.Dataset):
         return input_list
 
     def collate_fn(self, batch):
-
-        selected_pc, selected_labels, selected_idx, cloud_ind = [], [], [], []
+        selected_pc, selected_labels, selected_idx, cloud_ind, pc_path = [], [], [], [], []
         for i in range(len(batch)):
             selected_pc.append(batch[i][0])
             selected_labels.append(batch[i][1])
             selected_idx.append(batch[i][2])
             cloud_ind.append(batch[i][3])
+            pc_path.append(batch[i][4])
 
         selected_pc = np.stack(selected_pc)
         selected_labels = np.stack(selected_labels)
@@ -109,20 +169,21 @@ class SemanticKITTI(torch_data.Dataset):
 
         flat_inputs = self.tf_map(selected_pc, selected_labels, selected_idx, cloud_ind)
 
-        num_layers = cfg.num_layers
+        num_layers = self.model_cfg.num_layers
         inputs = {}
+        inputs['meta_info'] = {"pc_path": pc_path}
         inputs['xyz'] = []
         for tmp in flat_inputs[:num_layers]:
-            inputs['xyz'].append(torch.from_numpy(tmp).float())
+            inputs['xyz'].append(torch.from_numpy(tmp).float()) # 当前层输入点云
         inputs['neigh_idx'] = []
         for tmp in flat_inputs[num_layers: 2 * num_layers]:
-            inputs['neigh_idx'].append(torch.from_numpy(tmp).long())
+            inputs['neigh_idx'].append(torch.from_numpy(tmp).long()) # 输入点云近邻索引集
         inputs['sub_idx'] = []
         for tmp in flat_inputs[2 * num_layers:3 * num_layers]:
-            inputs['sub_idx'].append(torch.from_numpy(tmp).long())
+            inputs['sub_idx'].append(torch.from_numpy(tmp).long()) # 降采样近邻点索引集：降采样点对原始点
         inputs['interp_idx'] = []
         for tmp in flat_inputs[3 * num_layers:4 * num_layers]:
-            inputs['interp_idx'].append(torch.from_numpy(tmp).long())
+            inputs['interp_idx'].append(torch.from_numpy(tmp).long()) # 上采样近邻点索引集：原始点对降采样点，用于上采样恢复特征
         inputs['features'] = torch.from_numpy(flat_inputs[4 * num_layers]).transpose(1, 2).float()
         inputs['labels'] = torch.from_numpy(flat_inputs[4 * num_layers + 1]).long()
 

@@ -1,5 +1,7 @@
 class ConfigSemanticKITTI:
-    k_n = 16  # KNN
+    sampler = "crop_sampler" # [random_sampler, crop_sampler, None]
+    
+    k_n = 16  # KNNsample
     num_layers = 4  # Number of layers
     num_points = 4096 * 11  # Number of input points
     num_classes = 19  # Number of valid classes

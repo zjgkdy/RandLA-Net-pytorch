@@ -4,11 +4,11 @@
 {
     "distutils": {
         "depends": [
-            "/home/luoteng/anaconda3/envs/randla/lib/python3.8/site-packages/numpy/core/include/numpy/arrayobject.h",
-            "/home/luoteng/anaconda3/envs/randla/lib/python3.8/site-packages/numpy/core/include/numpy/arrayscalars.h",
-            "/home/luoteng/anaconda3/envs/randla/lib/python3.8/site-packages/numpy/core/include/numpy/ndarrayobject.h",
-            "/home/luoteng/anaconda3/envs/randla/lib/python3.8/site-packages/numpy/core/include/numpy/ndarraytypes.h",
-            "/home/luoteng/anaconda3/envs/randla/lib/python3.8/site-packages/numpy/core/include/numpy/ufuncobject.h",
+            "/home/ysy/miniconda3//envs/randla/lib/python3.8/site-packages/numpy/core/include/numpy/arrayobject.h",
+            "/home/ysy/miniconda3//envs/randla/lib/python3.8/site-packages/numpy/core/include/numpy/arrayscalars.h",
+            "/home/ysy/miniconda3//envs/randla/lib/python3.8/site-packages/numpy/core/include/numpy/ndarrayobject.h",
+            "/home/ysy/miniconda3//envs/randla/lib/python3.8/site-packages/numpy/core/include/numpy/ndarraytypes.h",
+            "/home/ysy/miniconda3//envs/randla/lib/python3.8/site-packages/numpy/core/include/numpy/ufuncobject.h",
             "knn_.h"
         ],
         "extra_compile_args": [
@@ -21,7 +21,7 @@
         ],
         "include_dirs": [
             "./",
-            "/home/luoteng/anaconda3/envs/randla/lib/python3.8/site-packages/numpy/core/include"
+            "/home/ysy/miniconda3//envs/randla/lib/python3.8/site-packages/numpy/core/include"
         ],
         "language": "c++",
         "name": "nearest_neighbors",

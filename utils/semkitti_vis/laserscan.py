@@ -4,7 +4,7 @@ import numpy as np
 
 class LaserScan:
     """Class that contains LaserScan with x,y,z,r"""
-    EXTENSIONS_SCAN = ['.npy']
+    EXTENSIONS_SCAN = ['.npz']
 
     def __init__(self, project=False, H=64, W=1024, fov_up=3.0, fov_down=-25.0):
         self.project = project
@@ -68,7 +68,7 @@ class LaserScan:
             raise RuntimeError("Filename extension is not valid scan file.")
 
         # if all goes well, open pointcloud
-        scan = np.load(filename)
+        scan = np.load(filename)['arr_0']
 
         # put in attribute
         points = scan    # get xyz
@@ -165,7 +165,7 @@ class LaserScan:
 
 class SemLaserScan(LaserScan):
     """Class that contains LaserScan with x,y,z,r,sem_label,sem_color_label,inst_label,inst_color_label"""
-    EXTENSIONS_LABEL = ['.label']
+    EXTENSIONS_LABEL = ['.npz']
 
     def __init__(self, nclasses, sem_color_dict=None, project=False, H=64, W=1024, fov_up=3.0, fov_down=-25.0):
         super(SemLaserScan, self).__init__(project, H, W, fov_up, fov_down)
@@ -173,14 +173,10 @@ class SemLaserScan(LaserScan):
         self.nclasses = nclasses         # number of classes
 
         # make semantic colors
-        max_sem_key = 0
-        for key, data in sem_color_dict.items():
-            if key + 1 > max_sem_key:
-                max_sem_key = key + 1
-        self.sem_color_lut = np.zeros((max_sem_key + 100, 3), dtype=np.float32)
+        self.sem_color_lut = np.zeros((len(sem_color_dict), 3), dtype=np.float32)
         for key, value in sem_color_dict.items():
             self.sem_color_lut[key] = np.array(value, np.float32) / 255.0
-
+            
         # make instance colors
         max_inst_id = 100000
         self.inst_color_lut = np.random.uniform(low=0.0, high=1.0, size=(max_inst_id, 3))
@@ -203,13 +199,13 @@ class SemLaserScan(LaserScan):
         self.proj_sem_label = np.zeros((self.proj_H, self.proj_W),
                                        dtype=np.int32)              # [H,W]  label
         self.proj_sem_color = np.zeros((self.proj_H, self.proj_W, 3),
-                                       dtype=np.float)              # [H,W,3] color
+                                       dtype=np.float32)              # [H,W,3] color
 
         # projection color with instance labels
         self.proj_inst_label = np.zeros((self.proj_H, self.proj_W),
                                         dtype=np.int32)              # [H,W]  label
         self.proj_inst_color = np.zeros((self.proj_H, self.proj_W, 3),
-                                        dtype=np.float)              # [H,W,3] color
+                                        dtype=np.float32)              # [H,W,3] color
 
     def open_label(self, filename):
         """ Open raw scan and fill in attributes
@@ -224,7 +220,25 @@ class SemLaserScan(LaserScan):
             raise RuntimeError("Filename extension is not valid label file.")
 
         # if all goes well, open label
-        label = np.fromfile(filename, dtype=np.uint32)
+        label = np.load(filename)['arr_0']
+
+        # set it
+        self.set_label(label)
+        
+    def open_label(self, filename):
+        """ Open raw scan and fill in attributes
+        """
+        # check filename is string
+        if not isinstance(filename, str):
+            raise TypeError("Filename should be string type, "
+                            "but was {type}".format(type=str(type(filename))))
+
+        # check extension is a laserscan
+        if not any(filename.endswith(ext) for ext in self.EXTENSIONS_LABEL):
+            raise RuntimeError("Filename extension is not valid label file.")
+
+        # if all goes well, open label
+        label = np.load(filename)['arr_0']
 
         # set it
         self.set_label(label)
@@ -251,14 +265,26 @@ class SemLaserScan(LaserScan):
         if self.project:
             self.do_label_projection()
 
-    def colorize(self):
+    def colorize(self, gt_label=None):
         """ Colorize pointcloud with the color of each semantic label
         """
-        self.sem_label_color = self.sem_color_lut[self.sem_label]
-        self.sem_label_color = self.sem_label_color.reshape((-1, 3))
+        if not isinstance(gt_label, np.ndarray):
+            self.sem_label_color = self.sem_color_lut[self.sem_label]
+            self.sem_label_color = self.sem_label_color.reshape((-1, 3))
 
-        self.inst_label_color = self.inst_color_lut[self.inst_label]
-        self.inst_label_color = self.inst_label_color.reshape((-1, 3))
+            self.inst_label_color = self.inst_color_lut[self.inst_label]
+            self.inst_label_color = self.inst_label_color.reshape((-1, 3))
+        else:            
+            FP_MASK = (gt_label == 1) & (self.sem_label == 2)
+            FN_MASK = (gt_label == 2) & (self.sem_label == 1)
+            self.sem_label_color = self.sem_color_lut[self.sem_label]
+            self.sem_label_color[FP_MASK] = np.array([0, 0, 1.0])
+            self.sem_label_color[FN_MASK] = np.array([0, 1.0, 0])
+            self.sem_label_color = self.sem_label_color.reshape((-1, 3))
+            
+
+            self.inst_label_color = self.inst_color_lut[self.inst_label]
+            self.inst_label_color = self.inst_label_color.reshape((-1, 3))
 
     def do_label_projection(self):
         # only map colors to labels that exist

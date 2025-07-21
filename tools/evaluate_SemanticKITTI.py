@@ -41,17 +41,8 @@ def get_args():
         '--datacfg', '-dc',
         type=str,
         required=False,
-        default="utils/semantic-kitti.yaml",
+        default="config/semantic-kitti.yaml",
         help='Dataset config file. Defaults to %(default)s',
-    )
-    parser.add_argument(
-        '--limit', '-l',
-        type=int,
-        required=False,
-        default=None,
-        help='Limit to the first "--limit" points of each scan. Useful for'
-        ' evaluating single scan from aggregated pointcloud.'
-        ' Defaults to %(default)s',
     )
     FLAGS = parser.parse_args()
 
@@ -89,7 +80,6 @@ if __name__ == '__main__':
     print("Predictions: ", FLAGS.predictions)
     print("Sequences: ", FLAGS.sequences)
     print("Config: ", FLAGS.datacfg)
-    print("Limit: ", FLAGS.limit)
     print("*" * 80)
 
     print("Opening data config file %s" % FLAGS.datacfg)
@@ -120,11 +110,11 @@ if __name__ == '__main__':
 
     # get label paths
     if FLAGS.eval_type == "sub":
-        label_names = load_label(FLAGS.dataset, FLAGS.sequences, "labels", "npy")
+        label_names = load_label(FLAGS.predictions, FLAGS.sequences, "labels/gt", "npz")
     else:
         label_names = load_label(FLAGS.dataset, FLAGS.sequences, "labels", "label")
     # get predictions paths
-    pred_names = load_label(FLAGS.predictions, FLAGS.sequences, "predictions", "npy")
+    pred_names = load_label(FLAGS.predictions, FLAGS.sequences, "labels/pred", "npz")
     assert(len(label_names) == len(pred_names))
 
     print("Evaluating sequences")
@@ -135,7 +125,7 @@ if __name__ == '__main__':
         pred_file = pred_names[i]
         # open label
         if FLAGS.eval_type == "sub":
-            label = np.load(label_file)
+            label = np.load(label_file)['arr_0']
             label = label.reshape((-1))  # reshape to vector
         else:
             label = np.fromfile(label_file, dtype=np.int32)
@@ -145,13 +135,10 @@ if __name__ == '__main__':
             assert ((sem_label + (inst_label << 16) == label).all())
             label = remap_lut[sem_label]
             
-        if FLAGS.limit is not None:
-            label = label[:FLAGS.limit]  # limit to desired length
         # open prediction
-        pred = np.load(pred_file)
+        pred = np.load(pred_file)['arr_0']
         pred = pred.reshape((-1))    # reshape to vector
-        if FLAGS.limit is not None:
-            pred = pred[:FLAGS.limit]  # limit to desired length
+        
         # add single scan to evaluation
         evaluator.addBatch(pred, label)
 

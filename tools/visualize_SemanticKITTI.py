@@ -9,7 +9,7 @@ from utils.semkitti_vis.laserscanvis import LaserScanVis
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("./visualize.py")
-    parser.add_argument(
+    parser.add_argument( 
         '--dataset', '-d',
         type=str,
         required=True,
@@ -19,25 +19,15 @@ if __name__ == '__main__':
         '--config', '-c',
         type=str,
         required=False,
-        default="utils/semantic-kitti.yaml",
+        default="config/semantic-kitti.yaml",
         help='Dataset config file. Defaults to %(default)s',
     )
     parser.add_argument(
         '--sequence', '-s',
         type=str,
-        default="00",
+        default="08",
         required=False,
         help='Sequence to visualize. Defaults to %(default)s',
-    )
-    parser.add_argument(
-        '--predictions', '-p',
-        type=str,
-        default=None,
-        required=False,
-        help='Alternate location for labels, to use predictions folder. '
-             'Must point to directory containing the predictions in the proper format '
-             ' (see readme)'
-             'Defaults to %(default)s',
     )
     FLAGS, unparsed = parser.parse_known_args()
 
@@ -47,7 +37,6 @@ if __name__ == '__main__':
     print("Dataset", FLAGS.dataset)
     print("Config", FLAGS.config)
     print("Sequence", FLAGS.sequence)
-    print("Predictions", FLAGS.predictions)
     print("*" * 80)
 
     # open config file
@@ -71,27 +60,36 @@ if __name__ == '__main__':
     scan_names.sort()
 
     # does sequence folder exist?
-    if FLAGS.predictions is not None:
-        label_paths = os.path.join(FLAGS.predictions, FLAGS.sequence, "predictions")
+    pred_label_paths = os.path.join(FLAGS.dataset, FLAGS.sequence, "labels/pred")
+    gt_label_paths = os.path.join(FLAGS.dataset, FLAGS.sequence, "labels/gt")
+    if os.path.isdir(pred_label_paths):
+        print("Predicted labels folder exists! Using labels from %s" % pred_label_paths)
     else:
-        label_paths = os.path.join(FLAGS.dataset, FLAGS.sequence, "labels")
-    if os.path.isdir(label_paths):
-        print("Labels folder exists! Using labels from %s" % label_paths)
-    else:
-        print("Labels folder doesn't exist! Exiting...")
+        print("Predicted labels folder doesn't exist! Exiting...")
         quit()
+    if os.path.isdir(gt_label_paths):
+        print("Groundtruth labels folder exists! Using labels from %s" % gt_label_paths)
+    else:
+        print("Groundtruth labels folder doesn't exist! Exiting...")
+        quit()
+        
     # populate the pointclouds
-    label_names = [os.path.join(dp, f) for dp, dn, fn in os.walk(
-        os.path.expanduser(label_paths)) for f in fn]
-    label_names.sort()
+    pred_label_names = [os.path.join(dp, f) for dp, dn, fn in os.walk(
+        os.path.expanduser(pred_label_paths)) for f in fn]
+    pred_label_names.sort()
+    gt_label_names = [os.path.join(dp, f) for dp, dn, fn in os.walk(
+        os.path.expanduser(gt_label_paths)) for f in fn]
+    gt_label_names.sort()
 
-    color_dict = CFG["color_map"]
+    color_dict =  {k: CFG["color_map"][v] for k, v in CFG["learning_map_inv"].items()}
+    
     nclasses = len(color_dict)
     scan = SemLaserScan(nclasses, color_dict, project=True)
 
     vis = LaserScanVis(scan=scan,
                        scan_names=scan_names,
-                       label_names=label_names,
+                       pred_label_names=pred_label_names,
+                       gt_label_names=gt_label_names,
                        offset=0,
                        semantics=True, instances=False)
 
