@@ -129,6 +129,9 @@ dmypy.json
 .pyre/
 
 log/
-data/
 .vscode/
 pretain_model/
+viz/
+runs/
+data/
+data/*

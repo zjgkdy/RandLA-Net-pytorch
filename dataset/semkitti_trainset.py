@@ -10,7 +10,7 @@ import torch
 class SemanticKITTI(torch_data.Dataset):
     def __init__(self, mode, data_list=None):
         self.name = 'SemanticKITTI'
-        self.dataset_path = '/home/luoteng/RandLA-Net-pytorch/data/semantic_kitti/sequences_0.06'
+        self.dataset_path = './data/SemanticKITTI/sequences_0.06'
 
         self.num_classes = cfg.num_classes
         self.ignored_labels = np.sort([0])
@@ -43,11 +43,18 @@ class SemanticKITTI(torch_data.Dataset):
         pc, tree, labels = self.get_data(pc_path)
         # crop a small point cloud
         pick_idx = np.random.choice(len(pc), 1)
-        selected_pc, selected_labels, selected_idx = self.crop_pc(pc, labels, tree, pick_idx)
-
+        selected_pc, selected_labels, selected_idx = self.crop_pc(pc, labels, tree, pick_idx) # 以 pc[pick_idx] 为中心裁剪局部区域
         return selected_pc, selected_labels, selected_idx, np.array([cloud_ind], dtype=np.int32)
 
     def get_data(self, file_path):
+        """ Read points, labels and search_tree data.
+
+        Args:
+            file_path (_type_): File pll;ath
+
+        Returns:
+            _type_: _description_
+        """
         seq_id = file_path[0]
         frame_id = file_path[1]
         kd_tree_path = join(self.dataset_path, seq_id, 'KDTree', frame_id + '.pkl')
@@ -62,6 +69,17 @@ class SemanticKITTI(torch_data.Dataset):
 
     @staticmethod
     def crop_pc(points, labels, search_tree, pick_idx):
+        """裁剪一块局部区域，以pick_idx点为中心的
+
+        Args:
+            points (_type_): 原始点云
+            labels (_type_): 原始点云标签
+            search_tree (_type_): 搜索树
+            pick_idx (_type_): 中心点索引
+
+        Returns:
+            _type_: _description_
+        """
         # crop a fixed size point cloud for training
         center_point = points[pick_idx, :].reshape(1, -1)
         select_idx = search_tree.query(center_point, k=cfg.num_points)[1][0]
@@ -78,14 +96,14 @@ class SemanticKITTI(torch_data.Dataset):
         input_up_samples = []
 
         for i in range(cfg.num_layers):
-            neighbour_idx = DP.knn_search(batch_pc, batch_pc, cfg.k_n)
-            sub_points = batch_pc[:, :batch_pc.shape[1] // cfg.sub_sampling_ratio[i], :]
-            pool_i = neighbour_idx[:, :batch_pc.shape[1] // cfg.sub_sampling_ratio[i], :]
-            up_i = DP.knn_search(sub_points, batch_pc, 1)
-            input_points.append(batch_pc)
-            input_neighbors.append(neighbour_idx)
-            input_pools.append(pool_i)
-            input_up_samples.append(up_i)
+            neighbour_idx = DP.knn_search(batch_pc, batch_pc, cfg.k_n) # 近邻点索引集
+            sub_points = batch_pc[:, :batch_pc.shape[1] // cfg.sub_sampling_ratio[i], :] # 降采样点集
+            pool_i = neighbour_idx[:, :batch_pc.shape[1] // cfg.sub_sampling_ratio[i], :] # 降采样近邻点索引集：降采样点对原始点
+            up_i = DP.knn_search(sub_points, batch_pc, 1) # 上采样近邻点索引集：原始点对降采样点，用于上采样恢复特征
+            input_points.append(batch_pc) # 输入点集
+            input_neighbors.append(neighbour_idx) # 输入近邻点集
+            input_pools.append(pool_i) # 降采样近邻点集
+            input_up_samples.append(up_i) # 上采样近邻点集
             batch_pc = sub_points
 
         input_list = input_points + input_neighbors + input_pools + input_up_samples
@@ -113,16 +131,16 @@ class SemanticKITTI(torch_data.Dataset):
         inputs = {}
         inputs['xyz'] = []
         for tmp in flat_inputs[:num_layers]:
-            inputs['xyz'].append(torch.from_numpy(tmp).float())
+            inputs['xyz'].append(torch.from_numpy(tmp).float()) # 当前层采样点集
         inputs['neigh_idx'] = []
         for tmp in flat_inputs[num_layers: 2 * num_layers]:
-            inputs['neigh_idx'].append(torch.from_numpy(tmp).long())
+            inputs['neigh_idx'].append(torch.from_numpy(tmp).long()) # 随机采样近邻索引集
         inputs['sub_idx'] = []
         for tmp in flat_inputs[2 * num_layers:3 * num_layers]:
-            inputs['sub_idx'].append(torch.from_numpy(tmp).long())
+            inputs['sub_idx'].append(torch.from_numpy(tmp).long()) # 随机降采样索引集
         inputs['interp_idx'] = []
         for tmp in flat_inputs[3 * num_layers:4 * num_layers]:
-            inputs['interp_idx'].append(torch.from_numpy(tmp).long())
+            inputs['interp_idx'].append(torch.from_numpy(tmp).long()) # 随机上采样近邻索引集
         inputs['features'] = torch.from_numpy(flat_inputs[4 * num_layers]).transpose(1, 2).float()
         inputs['labels'] = torch.from_numpy(flat_inputs[4 * num_layers + 1]).long()
 

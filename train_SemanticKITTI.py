@@ -26,7 +26,7 @@ parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint pa
 parser.add_argument('--log_dir', default='log', help='Dump dir to save model checkpoint [default: log]')
 parser.add_argument('--max_epoch', type=int, default=100, help='Epoch to run [default: 100]')
 parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 5]')
-parser.add_argument('--val_batch_size', type=int, default=30, help='Batch Size during training [default: 30]')
+parser.add_argument('--val_batch_size', type=int, default=20, help='Batch Size during training [default: 30]')
 parser.add_argument('--num_workers', type=int, default=10, help='Number of workers [default: 5]')
 FLAGS = parser.parse_args()
 
@@ -57,7 +57,7 @@ class Trainer:
             batch_size=FLAGS.batch_size,
             shuffle=True,
             num_workers=FLAGS.num_workers,
-            worker_init_fn=my_worker_init_fn,
+            worker_init_fn=my_worker_init_fn, # 设置 worker 的随机种子
             collate_fn=train_dataset.collate_fn,
             pin_memory=True
         )
@@ -74,6 +74,9 @@ class Trainer:
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.net = Network(cfg)
         self.net.to(device)
+        
+        total_params = sum(p.numel() for p in self.net.parameters())
+        print(f"Total number of parameters: {total_params / 1e6:.2f}M")
 
         # Load the Adam optimizer
         self.optimizer = optim.Adam(self.net.parameters(), lr=cfg.learning_rate)
