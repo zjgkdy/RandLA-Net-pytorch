@@ -131,16 +131,16 @@ class SemanticKITTI(torch_data.Dataset):
         inputs = {}
         inputs['xyz'] = []
         for tmp in flat_inputs[:num_layers]:
-            inputs['xyz'].append(torch.from_numpy(tmp).float()) # 当前层采样点集
+            inputs['xyz'].append(torch.from_numpy(tmp).float()) # 当前层输入点云
         inputs['neigh_idx'] = []
         for tmp in flat_inputs[num_layers: 2 * num_layers]:
-            inputs['neigh_idx'].append(torch.from_numpy(tmp).long()) # 随机采样近邻索引集
+            inputs['neigh_idx'].append(torch.from_numpy(tmp).long()) # 输入点云近邻索引集
         inputs['sub_idx'] = []
         for tmp in flat_inputs[2 * num_layers:3 * num_layers]:
-            inputs['sub_idx'].append(torch.from_numpy(tmp).long()) # 随机降采样索引集
+            inputs['sub_idx'].append(torch.from_numpy(tmp).long()) # 降采样近邻点索引集：降采样点对原始点
         inputs['interp_idx'] = []
         for tmp in flat_inputs[3 * num_layers:4 * num_layers]:
-            inputs['interp_idx'].append(torch.from_numpy(tmp).long()) # 随机上采样近邻索引集
+            inputs['interp_idx'].append(torch.from_numpy(tmp).long()) # 上采样近邻点索引集：原始点对降采样点，用于上采样恢复特征
         inputs['features'] = torch.from_numpy(flat_inputs[4 * num_layers]).transpose(1, 2).float()
         inputs['labels'] = torch.from_numpy(flat_inputs[4 * num_layers + 1]).long()
 

@@ -130,8 +130,7 @@ dmypy.json
 
 log/
 .vscode/
-pretain_model/
+pretain_model/*
 viz/
 runs/
-data/
-data/*
+data

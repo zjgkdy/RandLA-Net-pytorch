@@ -17,17 +17,19 @@ from utils.config import ConfigSemanticKITTI as cfg
 from utils.metric import compute_acc, IoUCalculator
 from network.RandLANet import Network
 from network.loss_func import compute_loss
+from utils.utils import compute_avg_grad_norm, get_learning_rate
 
 torch.backends.cudnn.enabled = False
 
 warnings.filterwarnings("ignore")
 parser = argparse.ArgumentParser()
 parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint path [default: None]')
-parser.add_argument('--log_dir', default='log', help='Dump dir to save model checkpoint [default: log]')
+parser.add_argument('--log_dir', default='log/debug', help='Dump dir to save model checkpoint [default: log]')
 parser.add_argument('--max_epoch', type=int, default=100, help='Epoch to run [default: 100]')
 parser.add_argument('--batch_size', type=int, default=4, help='Batch Size during training [default: 5]')
-parser.add_argument('--val_batch_size', type=int, default=20, help='Batch Size during training [default: 30]')
+parser.add_argument('--val_batch_size', type=int, default=20, help='Batch Size during validation [default: 30]')
 parser.add_argument('--num_workers', type=int, default=10, help='Number of workers [default: 5]')
+parser.add_argument('--val_interval', type=int, default=5, help='Number of validation interval')
 FLAGS = parser.parse_args()
 
 
@@ -41,6 +43,7 @@ class Trainer:
         if not os.path.exists(FLAGS.log_dir):
             os.mkdir(FLAGS.log_dir)
         self.log_dir = FLAGS.log_dir
+        self.val_interval = FLAGS.val_interval
         log_fname = os.path.join(FLAGS.log_dir, 'log_train.txt')
         LOGGING_FORMAT = '%(asctime)s %(levelname)s: %(message)s'
         DATE_FORMAT = '%Y%m%d %H:%M:%S'
@@ -87,7 +90,7 @@ class Trainer:
         self.start_epoch = 0
         CHECKPOINT_PATH = FLAGS.checkpoint_path
         if CHECKPOINT_PATH is not None and os.path.isfile(CHECKPOINT_PATH):
-            checkpoint = torch.load(CHECKPOINT_PATH)
+            checkpoint = torch.load(CHECKPOINT_PATH, map_location='cpu')
             self.net.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
@@ -123,27 +126,45 @@ class Trainer:
             loss, end_points = compute_loss(end_points, self.train_dataset, self.criterion)
             loss.backward()
             self.optimizer.step()
-
+            
+            # print info
+            if batch_idx % 50 == 0:
+                avg_grad_norm = compute_avg_grad_norm(self.net)
+                current_lr = get_learning_rate(self.optimizer)
+                print(f"[Epoch {self.cur_epoch :03d} | Iter {batch_idx:04d}] ",
+                        f"Loss: {loss:.4f} | ",
+                        f"GradNorm: {avg_grad_norm:.6f} | ",
+                        f"LR: {current_lr:.6f}",)
+                self.tf_writer.add_scalar('Train/Loss', loss.item(), self.cur_epoch * len(self.train_loader) + batch_idx)
+                self.tf_writer.add_scalar('Train/GradNorm', avg_grad_norm, self.cur_epoch * len(self.train_loader) + batch_idx)
+                self.tf_writer.add_scalar('Train/LR', current_lr, self.cur_epoch * len(self.train_loader) + batch_idx)
+                
         self.scheduler.step()
 
     def train(self):
         for epoch in range(self.start_epoch, FLAGS.max_epoch):
             self.cur_epoch = epoch
             self.logger.info('**** EPOCH %03d ****' % (epoch))
-
+            print('**** EPOCH %03d ****' % (epoch))
             self.train_one_epoch()
             self.logger.info('**** EVAL EPOCH %03d ****' % (epoch))
-            mean_iou = self.validate()
-            # Save best checkpoint
-            if mean_iou > self.highest_val_iou:
-                self.hightest_val_iou = mean_iou
-                checkpoint_file = os.path.join(self.log_dir, 'checkpoint.tar')
-                self.save_checkpoint(checkpoint_file)
+            
+            if epoch % self.val_interval == 0:
+                print('**** EVAL EPOCH %03d ****' % (epoch))
+                mean_iou = self.validate()
+                print(f"MeanIou = {mean_iou:.4f}, highest_val_iou = {self.highest_val_iou:.4f}")
+                # Save best checkpoint
+                if mean_iou > self.highest_val_iou:
+                    self.hightest_val_iou = mean_iou
+                    checkpoint_file = os.path.join(self.log_dir, 'checkpoint.tar')
+                    self.save_checkpoint(checkpoint_file)
 
     def validate(self):
         self.net.eval()  # set model to eval mode (for bn and dp)
         iou_calc = IoUCalculator(cfg)
 
+        val_loss_total = 0.0
+        val_acc_total = 0.0
         tqdm_loader = tqdm(self.val_loader, total=len(self.val_loader))
         with torch.no_grad():
             for batch_idx, batch_data in enumerate(tqdm_loader):
@@ -159,16 +180,29 @@ class Trainer:
                 end_points = self.net(batch_data)
 
                 loss, end_points = compute_loss(end_points, self.train_dataset, self.criterion)
+                val_loss_total += loss.item()
 
                 acc, end_points = compute_acc(end_points)
+                val_acc_total += acc
                 iou_calc.add_data(end_points)
 
+        mean_loss = val_loss_total / len(self.val_loader)
+        mean_acc = val_acc_total / len(self.val_loader)
         mean_iou, iou_list = iou_calc.compute_iou()
-        self.logger.info('mean IoU:{:.1f}'.format(mean_iou * 100))
         s = 'IoU:'
         for iou_tmp in iou_list:
             s += '{:5.2f} '.format(100 * iou_tmp)
+        
+        print(f"[Epoch {self.cur_epoch :03d}",
+                        f"Mean_Loss: {mean_loss:.4f} | ",
+                        f"Mean_Acc: {mean_acc:.6f} | ",)
+        print(s)
+        self.logger.info('mean IoU:{:.1f}'.format(mean_iou * 100))
         self.logger.info(s)
+        self.tf_writer.add_scalar('Eval/mean_loss', mean_loss, self.cur_epoch)
+        self.tf_writer.add_scalar('Eval/mean_acc', mean_acc, self.cur_epoch)
+        self.tf_writer.add_scalar('Eval/mean_iou', mean_iou, self.cur_epoch)
+
         return mean_iou
 
     def save_checkpoint(self, fname):
