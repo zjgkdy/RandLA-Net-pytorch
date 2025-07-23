@@ -1,9 +1,12 @@
 #!/bin/bash
+export PYTHONPATH=$(pwd) 
+
 EvalType=sub
-Dataset=log/debug/predictions
+Dataset=log/checkpoint_0722/predictions
 Sequence=08
 Datacfg=config/semantic-kitti.yaml
-python evaluate_SemanticKITTI.py \
+
+python ./tools/evaluate_SemanticKITTI.py \
     --eval_type $EvalType\
     --dataset $Dataset \
     --sequence $Sequence \

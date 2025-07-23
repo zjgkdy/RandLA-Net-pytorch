@@ -25,6 +25,7 @@ torch.backends.cudnn.enabled = False
 
 warnings.filterwarnings("ignore")
 parser = argparse.ArgumentParser()
+parser.add_argument('--model_config', default='crop_sampler_config', help='model config path')
 parser.add_argument('--yaml_config', default='config/semantic-kitti.yaml', help='semantic-kitti.yaml path')
 parser.add_argument('--dataset', default='./data/sequences_0.06', help='Dataset to train with. The parent directory of sequences. No Default.')
 parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint path [default: None]')
@@ -71,8 +72,18 @@ class Trainer:
        
         # get_dataset & dataloader
         DATA = yaml.safe_load(open(FLAGS.yaml_config, 'r'))
-        self.train_dataset = SemanticKITTI('training', dataset_path=FLAGS.dataset, dataset_cfg=DATA)
-        self.val_dataset  = SemanticKITTI('validation', dataset_path=FLAGS.dataset, dataset_cfg=DATA)
+        self.train_dataset = SemanticKITTI(
+            'training', 
+            dataset_path=FLAGS.dataset, 
+            dataset_cfg=DATA, 
+            model_cfg=FLAGS.model_config,
+        )
+        self.val_dataset  = SemanticKITTI(
+            'validation', 
+            dataset_path=FLAGS.dataset, 
+            dataset_cfg=DATA,
+            model_cfg=FLAGS.model_config,
+        )
         
         # Distributed Train
         init_distributed_mode(FLAGS)

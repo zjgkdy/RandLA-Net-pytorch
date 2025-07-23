@@ -24,6 +24,7 @@ torch.backends.cudnn.enabled = False
 
 warnings.filterwarnings("ignore")
 parser = argparse.ArgumentParser()
+parser.add_argument('--model_config', type=str, default='crop_sampler_config', help='crop_sampler_config, random_sampler_config, config')
 parser.add_argument('--yaml_config', default='config/semantic-kitti.yaml', help='semantic-kitti.yaml path')
 parser.add_argument('--dataset', default='./data/sequences_0.06', help='Dataset to evaluate with. The parent directory of sequences.')
 parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint path [default: None]')
@@ -68,7 +69,7 @@ class Inference:
         # Dataloader
         print("Opening data config file %s" % FLAGS.yaml_config)
         DATA = yaml.safe_load(open(FLAGS.yaml_config, 'r'))
-        self.test_dataset = SemanticKITTI('validation', dataset_path=FLAGS.dataset, dataset_cfg=DATA)
+        self.test_dataset = SemanticKITTI('validation', dataset_path=FLAGS.dataset, dataset_cfg=DATA, model_cfg=FLAGS.model_config)
         if FLAGS.distributed:
             self.val_sampler = torch.utils.data.distributed.DistributedSampler(self.test_dataset, shuffle=False)
         else:

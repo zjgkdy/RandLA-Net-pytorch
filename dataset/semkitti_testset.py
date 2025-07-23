@@ -1,22 +1,25 @@
 from utils.data_process import DataProcessing as DP
-from config.config import ConfigSemanticKITTI as cfg
 from os.path import join
 import numpy as np
 import pickle
 import torch.utils.data as torch_data
 import torch
-
+import importlib
 
 class SemanticKITTI(torch_data.Dataset):
-    def __init__(self, mode, dataset_path, dataset_cfg, data_list=None):
+    def __init__(self, mode, dataset_path, dataset_cfg, model_cfg, data_list=None):
         self.name = 'SemanticKITTI'
         self.dataset_path = dataset_path
         self.raw_color_map = dataset_cfg["color_map"]
         self.learning_map_inv = dataset_cfg["learning_map_inv"]
         self.color_map = {k: self.raw_color_map[v] for k, v in self.learning_map_inv.items()}
 
-        self.downsample = cfg.DownSampleFlag
-        self.num_classes = cfg.num_classes
+        config_module = importlib.import_module(f'config.{model_cfg}')
+        config_class = getattr(config_module, "ConfigSemanticKITTI")
+        self.model_cfg = config_class()
+
+        self.sampler = self.model_cfg.sampler
+        self.num_classes = self.model_cfg.num_classes
         self.ignored_labels = np.sort([0])
 
         self.mode = mode
@@ -46,15 +49,12 @@ class SemanticKITTI(torch_data.Dataset):
         pc_path = data_list[cloud_ind]
         pc, tree, labels = self.get_data(pc_path)
 
-        if self.downsample:
+        if self.sampler == "crop_sampler":
             # crop a small point cloud
             pick_idx = np.random.choice(len(pc), 1)
             selected_pc, selected_labels, selected_idx = self.crop_pc(pc, labels, tree, pick_idx) # 以 pc[pick_idx] 为中心裁剪局部区域
-        else:
-            selected_pc = pc
-            selected_labels = labels
-            selected_idx = np.arange(0, selected_labels.shape[0])
-
+        elif self.sampler == "random_sampler":
+            selected_pc, selected_labels, selected_idx = self.random_sample(pc, labels)
         return selected_pc, selected_labels, selected_idx, np.array([cloud_ind], dtype=np.int32), pc_path
 
     def get_data(self, file_path):
@@ -78,8 +78,7 @@ class SemanticKITTI(torch_data.Dataset):
         labels = np.squeeze(np.load(label_path))
         return points, search_tree, labels
 
-    @staticmethod
-    def crop_pc(points, labels, search_tree, pick_idx):
+    def crop_pc(self, points, labels, search_tree, pick_idx):
         """裁剪一块局部区域，以pick_idx点为中心的
 
         Args:
@@ -93,7 +92,7 @@ class SemanticKITTI(torch_data.Dataset):
         """
         # crop a fixed size point cloud for training
         center_point = points[pick_idx, :].reshape(1, -1)
-        select_idx = search_tree.query(center_point, k=cfg.num_points)[1][0]
+        select_idx = search_tree.query(center_point, k=self.model_cfg.num_points)[1][0]
         select_idx = DP.shuffle_idx(select_idx)
         select_points = points[select_idx]
         select_labels = labels[select_idx]
@@ -106,10 +105,10 @@ class SemanticKITTI(torch_data.Dataset):
         input_pools = []
         input_up_samples = []
 
-        for i in range(cfg.num_layers):
-            neighbour_idx = DP.knn_search(batch_pc, batch_pc, cfg.k_n) # 近邻点索引集
-            sub_points = batch_pc[:, :batch_pc.shape[1] // cfg.sub_sampling_ratio[i], :] # 降采样点集
-            pool_i = neighbour_idx[:, :batch_pc.shape[1] // cfg.sub_sampling_ratio[i], :] # 降采样近邻点索引集：降采样点对原始点
+        for i in range(self.model_cfg.num_layers):
+            neighbour_idx = DP.knn_search(batch_pc, batch_pc, self.model_cfg.k_n) # 近邻点索引集
+            sub_points = batch_pc[:, :batch_pc.shape[1] // self.model_cfg.sub_sampling_ratio[i], :] # 降采样点集
+            pool_i = neighbour_idx[:, :batch_pc.shape[1] // self.model_cfg.sub_sampling_ratio[i], :] # 降采样近邻点索引集：降采样点对原始点
             up_i = DP.knn_search(sub_points, batch_pc, 1) # 上采样近邻点索引集：原始点对降采样点，用于上采样恢复特征
             input_points.append(batch_pc) # 输入点集
             input_neighbors.append(neighbour_idx) # 输入近邻点集
@@ -138,7 +137,7 @@ class SemanticKITTI(torch_data.Dataset):
 
         flat_inputs = self.tf_map(selected_pc, selected_labels, selected_idx, cloud_ind)
 
-        num_layers = cfg.num_layers
+        num_layers = self.model_cfg.num_layers
         inputs = {}
         inputs['meta_info'] = {"pc_path": pc_path}
         inputs['xyz'] = []

@@ -1,6 +1,8 @@
 #!/bin/bash
+export PYTHONPATH=$(pwd) 
+
 Dataset=log/debug/predictions
 Sequence=08
-python visualize_SemanticKITTI.py \
+python ./tools/visualize_SemanticKITTI.py \
     --dataset $Dataset \
     --sequence $Sequence 
