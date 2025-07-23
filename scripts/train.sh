@@ -1,7 +1,7 @@
 #!/bin/bash
 export PYTHONPATH=$(pwd) 
 
-ModelCfg=crop_sampler_config
+ModelCfg=random_sampler_config
 Dataset=data/dataset/sequences_0.06
 CheckpointPath=pretrain_model/checkpoint.tar
 LogDir=./log/random_sample_0723

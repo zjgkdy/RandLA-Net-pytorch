@@ -69,7 +69,7 @@ class Trainer:
     def __init__(self):
         self.log_dir = FLAGS.log_dir
         self.val_interval = FLAGS.val_interval
-       
+        
         # get_dataset & dataloader
         DATA = yaml.safe_load(open(FLAGS.yaml_config, 'r'))
         self.train_dataset = SemanticKITTI(
@@ -241,9 +241,8 @@ class Trainer:
                     if type(batch_data[key]) is list:
                         for i in range(cfg.num_layers):
                             batch_data[key][i] = batch_data[key][i].cuda(non_blocking=True)
-                    else:
+                    elif type(batch_data[key]) is torch.Tensor:
                         batch_data[key] = batch_data[key].cuda(non_blocking=True)
-
                 # Forward pass
                 end_points = self.net(batch_data)
 
