@@ -1,7 +1,9 @@
 class ConfigSemanticKITTI:
+    DownSampleFlag = True
+    
     k_n = 16  # KNN
     num_layers = 4  # Number of layers
-    num_points = 4096 * 11  # Number of input points
+    num_points = 4096 * 22  # Number of input points
     num_classes = 19  # Number of valid classes
     sub_grid_size = 0.06  # preprocess_parameter
 

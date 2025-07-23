@@ -1,6 +1,7 @@
 import os
 import torch
 import numpy as np
+import open3d as o3d
 import torch.distributed as dist
 
 def get_learning_rate(optimizer):
@@ -30,3 +31,9 @@ def reduce_value(value, average=True):
             if average:
                 value /= world_size
         return value
+
+def create_pcd(points_xyz, colors):
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points_xyz)
+    pcd.colors = o3d.utility.Vector3dVector(colors)    
+    return pcd

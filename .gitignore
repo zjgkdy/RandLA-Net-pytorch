@@ -134,3 +134,4 @@ pretrain_model/
 viz/
 runs/
 data
+*.pcd

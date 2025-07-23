@@ -11,7 +11,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--src_path', default=None, help='source dataset path [default: None]')
 parser.add_argument('--dst_path', default=None, help='destination dataset path [default: None]')
 parser.add_argument('--grid_size', type=float, default=0.06, help='Subsample Grid Size [default: 0.06]')
-parser.add_argument('--yaml_config', default='utils/semantic-kitti.yaml', help='semantic-kitti.yaml path')
+parser.add_argument('--yaml_config', default='config/semantic-kitti.yaml', help='semantic-kitti.yaml path')
 FLAGS = parser.parse_args()
 
 

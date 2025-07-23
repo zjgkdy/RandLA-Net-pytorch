@@ -1,5 +1,5 @@
 from utils.data_process import DataProcessing as DP
-from utils.config import ConfigSemanticKITTI as cfg
+from config.config import ConfigSemanticKITTI as cfg
 from os.path import join
 import numpy as np
 import pickle
@@ -8,9 +8,12 @@ import torch
 
 
 class SemanticKITTI(torch_data.Dataset):
-    def __init__(self, mode, data_list=None):
+    def __init__(self, mode, dataset_path, dataset_cfg, data_list=None):
         self.name = 'SemanticKITTI'
-        self.dataset_path = './data/SemanticKITTI/sequences_0.06'
+        self.dataset_path = dataset_path
+        self.raw_color_map = dataset_cfg["color_map"]
+        self.learning_map_inv = dataset_cfg["learning_map_inv"]
+        self.color_map = {k: self.raw_color_map[v] for k, v in self.learning_map_inv.items()}
 
         self.num_classes = cfg.num_classes
         self.ignored_labels = np.sort([0])
@@ -33,8 +36,8 @@ class SemanticKITTI(torch_data.Dataset):
         return len(self.data_list)
 
     def __getitem__(self, item):
-        selected_pc, selected_labels, selected_idx, cloud_ind = self.spatially_regular_gen(item, self.data_list)
-        return selected_pc, selected_labels, selected_idx, cloud_ind
+        selected_pc, selected_labels, selected_idx, cloud_ind, pc_path = self.spatially_regular_gen(item, self.data_list)
+        return selected_pc, selected_labels, selected_idx, cloud_ind, pc_path
 
     def spatially_regular_gen(self, item, data_list):
         # Generator loop
@@ -44,7 +47,7 @@ class SemanticKITTI(torch_data.Dataset):
         # crop a small point cloud
         pick_idx = np.random.choice(len(pc), 1)
         selected_pc, selected_labels, selected_idx = self.crop_pc(pc, labels, tree, pick_idx) # 以 pc[pick_idx] 为中心裁剪局部区域
-        return selected_pc, selected_labels, selected_idx, np.array([cloud_ind], dtype=np.int32)
+        return selected_pc, selected_labels, selected_idx, np.array([cloud_ind], dtype=np.int32), pc_path
 
     def get_data(self, file_path):
         """ Read points, labels and search_tree data.
@@ -112,13 +115,13 @@ class SemanticKITTI(torch_data.Dataset):
         return input_list
 
     def collate_fn(self, batch):
-
-        selected_pc, selected_labels, selected_idx, cloud_ind = [], [], [], []
+        selected_pc, selected_labels, selected_idx, cloud_ind, pc_path = [], [], [], [], []
         for i in range(len(batch)):
             selected_pc.append(batch[i][0])
             selected_labels.append(batch[i][1])
             selected_idx.append(batch[i][2])
             cloud_ind.append(batch[i][3])
+            pc_path.append(batch[i][4])
 
         selected_pc = np.stack(selected_pc)
         selected_labels = np.stack(selected_labels)
@@ -129,6 +132,7 @@ class SemanticKITTI(torch_data.Dataset):
 
         num_layers = cfg.num_layers
         inputs = {}
+        inputs['meta_info'] = {"pc_path": pc_path}
         inputs['xyz'] = []
         for tmp in flat_inputs[:num_layers]:
             inputs['xyz'].append(torch.from_numpy(tmp).float()) # 当前层输入点云

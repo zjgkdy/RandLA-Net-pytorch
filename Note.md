@@ -57,7 +57,7 @@ def init_distributed_mode(FLAGS):
         FLAGS.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     return
 ```
-### 2. 数据集配置
+2. 数据集配置
 ```
 if FLAGS.distributed:
     # 给每个rank对应的GPU进程分配训练的样本索引
@@ -103,7 +103,7 @@ self.val_loader = DataLoader(
     pin_memory=True
 )
 ```
-### 3. 模型配置
+3. 模型配置
 ```
 self.net = Network(cfg)
 self.net = self.net.to(FLAGS.device)
@@ -119,14 +119,14 @@ if FLAGS.distributed:
 else:
     self.net = self.net.to(FLAGS.device)
 ```
-### 4. 模型训练重采样
+4. 模型训练重采样
 ```
 def train_one_epoch(self):
     if FLAGS.distributed:
         self.train_sampler.set_epoch(self.cur_epoch)
     .....
 ```
-### 5. 多卡数据同步
+5. 多卡数据同步
 ```
 def reduce_value(value, average=True):
     world_size = int(os.environ.get('WORLD_SIZE', 1))    

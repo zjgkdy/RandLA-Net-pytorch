@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # This file is covered by the LICENSE file in the root of this project.
 
+import copy
 import vispy
 from vispy.scene import visuals, SceneCanvas
 import numpy as np
@@ -10,11 +11,13 @@ from matplotlib import pyplot as plt
 class LaserScanVis:
     """Class that creates and handles a visualizer for a pointcloud"""
 
-    def __init__(self, scan, scan_names, label_names, offset=0,
+    def __init__(self, scan, scan_names, pred_label_names, gt_label_names, offset=0,
                  semantics=True, instances=False):
-        self.scan = scan
+        self.pred_scan = scan
+        self.gt_scan = copy.deepcopy(scan)
         self.scan_names = scan_names
-        self.label_names = label_names
+        self.pred_label_names = pred_label_names
+        self.gt_label_names = gt_label_names
         self.offset = offset
         self.total = len(self.scan_names)
         self.semantics = semantics
@@ -42,23 +45,22 @@ class LaserScanVis:
         self.grid = self.canvas.central_widget.add_grid()
 
         # laserscan part
-        self.scan_view = vispy.scene.widgets.ViewBox(
-            border_color='white', parent=self.canvas.scene)
-        self.grid.add_widget(self.scan_view, 0, 0)
-        self.scan_vis = visuals.Markers()
-        self.scan_view.camera = 'turntable'
-        self.scan_view.add(self.scan_vis)
-        visuals.XYZAxis(parent=self.scan_view.scene)
+        self.gt_sem_view = vispy.scene.widgets.ViewBox(border_color='white', parent=self.canvas.scene)
+        self.grid.add_widget(self.gt_sem_view, 0, 0)
+        self.gt_sem_vis = visuals.Markers()
+        self.gt_sem_view.camera = 'turntable'
+        self.gt_sem_view.add(self.gt_sem_vis)
+        visuals.XYZAxis(parent=self.gt_sem_view.scene)
+        
         # add semantics
         print("Using semantics in visualizer")
-        self.sem_view = vispy.scene.widgets.ViewBox(
-            border_color='white', parent=self.canvas.scene)
-        self.grid.add_widget(self.sem_view, 0, 1)
-        self.sem_vis = visuals.Markers()
-        self.sem_view.camera = 'turntable'
-        self.sem_view.add(self.sem_vis)
-        visuals.XYZAxis(parent=self.sem_view.scene)
-        # self.sem_view.camera.link(self.scan_view.camera)
+        self.pred_sem_view = vispy.scene.widgets.ViewBox(border_color='white', parent=self.canvas.scene)
+        self.grid.add_widget(self.pred_sem_view, 0, 1)
+        self.pred_sem_vis = visuals.Markers()
+        self.pred_sem_view.camera = 'turntable'
+        self.pred_sem_view.camera.link(self.gt_sem_view.camera)
+        self.pred_sem_view.add(self.pred_sem_vis)
+        visuals.XYZAxis(parent=self.pred_sem_view.scene)
 
         # img canvas size
         self.multiplier = 1
@@ -78,19 +80,17 @@ class LaserScanVis:
         self.img_canvas.events.key_press.connect(self.key_press)
         self.img_canvas.events.draw.connect(self.draw)
 
-        # add a view for the depth
-        self.img_view = vispy.scene.widgets.ViewBox(
-            border_color='white', parent=self.img_canvas.scene)
-        self.img_grid.add_widget(self.img_view, 0, 0)
-        self.img_vis = visuals.Image(cmap='viridis')
-        self.img_view.add(self.img_vis)
-
         # add semantics
-        self.sem_img_view = vispy.scene.widgets.ViewBox(
-              border_color='white', parent=self.img_canvas.scene)
-        self.img_grid.add_widget(self.sem_img_view, 1, 0)
-        self.sem_img_vis = visuals.Image(cmap='viridis')
-        self.sem_img_view.add(self.sem_img_vis)
+        self.gt_sem_img_view = vispy.scene.widgets.ViewBox(border_color='white', parent=self.img_canvas.scene)
+        self.img_grid.add_widget(self.gt_sem_img_view, 0, 0)
+        self.gt_sem_img_vis = visuals.Image(cmap='viridis')
+        self.gt_sem_img_view.add(self.gt_sem_img_vis)
+
+        self.pred_sem_img_view = vispy.scene.widgets.ViewBox(border_color='white', parent=self.img_canvas.scene)
+        self.img_grid.add_widget(self.pred_sem_img_view, 1, 0)
+        self.pred_sem_img_vis = visuals.Image(cmap='viridis')
+        self.pred_sem_img_view.add(self.pred_sem_img_vis)
+
 
     def get_mpl_colormap(self, cmap_name):
         cmap = plt.get_cmap(cmap_name)
@@ -105,55 +105,34 @@ class LaserScanVis:
 
     def update_scan(self):
         # first open data
-        self.scan.open_scan(self.scan_names[self.offset])
-        self.scan.open_label(self.label_names[self.offset])
-        self.scan.colorize()
+        self.pred_scan.open_scan(self.scan_names[self.offset])
+        self.pred_scan.open_label(self.pred_label_names[self.offset])
+        self.pred_scan.colorize()
+        self.gt_scan.open_scan(self.scan_names[self.offset])
+        self.gt_scan.open_label(self.gt_label_names[self.offset])
+        self.gt_scan.colorize()
 
         # then change names
         title = "scan " + str(self.offset)
         self.canvas.title = title
         self.img_canvas.title = title
-
-        # then do all the point cloud stuff
-
-        # plot scan
-        power = 16
-        # print()
-        range_data = np.copy(self.scan.unproj_range)
-        # print(range_data.max(), range_data.min())
-        range_data = range_data**(1 / power)
-        # print(range_data.max(), range_data.min())
-        viridis_range = ((range_data - range_data.min()) /
-                         (range_data.max() - range_data.min()) *
-                         255).astype(np.uint8)
-        viridis_map = self.get_mpl_colormap("viridis")
-        viridis_colors = viridis_map[viridis_range]
-        self.scan_vis.set_data(self.scan.points,
-                               face_color=viridis_colors[..., ::-1],
-                               edge_color=viridis_colors[..., ::-1],
-                               size=1)
-
+        
         # plot semantics
-        self.sem_vis.set_data(self.scan.points,
-                              face_color=self.scan.sem_label_color[..., ::-1],
-                              edge_color=self.scan.sem_label_color[..., ::-1],
+        self.pred_sem_vis.set_data(self.pred_scan.points,
+                              face_color=self.pred_scan.sem_label_color[..., ::-1],
+                              edge_color=self.pred_scan.sem_label_color[..., ::-1],
                               size=1)
 
-        # now do all the range image stuff
-        # plot range image
-        data = np.copy(self.scan.proj_range)
-        # print(data[data > 0].max(), data[data > 0].min())
-        data[data > 0] = data[data > 0]**(1 / power)
-        data[data < 0] = data[data > 0].min()
-        # print(data.max(), data.min())
-        data = (data - data[data > 0].min()) / \
-            (data.max() - data[data > 0].min())
-        # print(data.max(), data.min())
-        self.img_vis.set_data(data)
-        self.img_vis.update()
+        self.gt_sem_vis.set_data(self.gt_scan.points,
+                              face_color=self.gt_scan.sem_label_color[..., ::-1],
+                              edge_color=self.gt_scan.sem_label_color[..., ::-1],
+                              size=1)
 
-        self.sem_img_vis.set_data(self.scan.proj_sem_color[..., ::-1])
-        self.sem_img_vis.update()
+        self.pred_sem_img_vis.set_data(self.pred_scan.proj_sem_color[..., ::-1])
+        self.pred_sem_img_vis.update()
+
+        self.gt_sem_img_vis.set_data(self.gt_scan.proj_sem_color[..., ::-1])
+        self.gt_sem_img_vis.update()
 
     # interface
     def key_press(self, event):

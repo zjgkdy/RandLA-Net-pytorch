@@ -1,5 +1,6 @@
 # Common
 import os
+import yaml
 import logging
 import warnings
 import argparse
@@ -14,7 +15,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 # my module
 from dataset.semkitti_trainset import SemanticKITTI
-from utils.config import ConfigSemanticKITTI as cfg
+from config.config import ConfigSemanticKITTI as cfg
 from utils.metric import compute_acc, IoUCalculator
 from network.RandLANet import Network
 from network.loss_func import compute_loss
@@ -24,6 +25,8 @@ torch.backends.cudnn.enabled = False
 
 warnings.filterwarnings("ignore")
 parser = argparse.ArgumentParser()
+parser.add_argument('--yaml_config', default='config/semantic-kitti.yaml', help='semantic-kitti.yaml path')
+parser.add_argument('--dataset', default='./data/sequences_0.06', help='Dataset to train with. The parent directory of sequences. No Default.')
 parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint path [default: None]')
 parser.add_argument('--log_dir', default='log/debug', help='Dump dir to save model checkpoint [default: log]')
 parser.add_argument('--max_epoch', type=int, default=100, help='Epoch to run [default: 100]')
@@ -67,8 +70,9 @@ class Trainer:
         self.val_interval = FLAGS.val_interval
        
         # get_dataset & dataloader
-        self.train_dataset = SemanticKITTI('training')
-        self.val_dataset  = SemanticKITTI('validation')
+        DATA = yaml.safe_load(open(FLAGS.yaml_config, 'r'))
+        self.train_dataset = SemanticKITTI('training', dataset_path=FLAGS.dataset, dataset_cfg=DATA)
+        self.val_dataset  = SemanticKITTI('validation', dataset_path=FLAGS.dataset, dataset_cfg=DATA)
         
         # Distributed Train
         init_distributed_mode(FLAGS)
@@ -165,7 +169,7 @@ class Trainer:
                 if type(batch_data[key]) is list:
                     for i in range(cfg.num_layers):
                         batch_data[key][i] = batch_data[key][i].cuda(non_blocking=True)
-                else:
+                elif type(batch_data[key]) is torch.Tensor:
                     batch_data[key] = batch_data[key].cuda(non_blocking=True)
 
             self.optimizer.zero_grad()

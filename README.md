@@ -66,7 +66,7 @@ python3 test_SemanticKITTI.py <args>
 
 ## D. Visualization & Evaluation
 
-1. Visualization
+1. Visualization 
 
 ```bash
 python3 visualize_SemanticKITTI.py <args>
