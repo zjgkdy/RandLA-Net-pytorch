@@ -2,7 +2,7 @@
 export PYTHONPATH=$(pwd) 
 
 EvalType=sub
-Dataset=log/checkpoint_0722/predictions
+Dataset=results/checkpoint_0722/crop_sampler_predictions  
 Sequence=08
 Datacfg=config/semantic-kitti.yaml
 

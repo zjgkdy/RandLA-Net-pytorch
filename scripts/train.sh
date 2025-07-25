@@ -6,7 +6,7 @@ Dataset=data/dataset/sequences_0.06
 CheckpointPath=pretrain_model/checkpoint.tar
 LogDir=./log/random_sample_0723
 MaxEpoch=100
-TrainBatchSize=4 
+TrainBatchSize=4
 ValBatchSize=20
 NumWorkers=10
 

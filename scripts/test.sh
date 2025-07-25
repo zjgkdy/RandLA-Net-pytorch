@@ -3,8 +3,8 @@ export PYTHONPATH=$(pwd)
 
 ModelCfg=crop_sampler_config
 Dataset=data/dataset/sequences_0.06
-CheckpointPath=pretrain_model/checkpoint_0722.tar
-ResultDir=log/checkpoint_0722/predictions  
+CheckpointPath=pretrain_model/crop_sampler_checkpoint_0722.tar
+ResultDir=results/checkpoint_0722/crop_sampler_predictions  
 YamlConfig=config/semantic-kitti.yaml
 BatchSize=20
 NumWorkers=10

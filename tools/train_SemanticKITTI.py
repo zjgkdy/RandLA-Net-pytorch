@@ -221,11 +221,14 @@ class Trainer:
                 mean_iou = self.validate()                
                 
                 if self.logger is not None:
+                    self.logger.info(f"MeanIou = {mean_iou:.4f}, highest_val_iou = {self.highest_val_iou:.4f}")
                     print(f"MeanIou = {mean_iou:.4f}, highest_val_iou = {self.highest_val_iou:.4f}")
+                    checkpoint_file = os.path.join(self.log_dir, f'checkpoint.tar')
+                    self.save_checkpoint(checkpoint_file)
                     # Save best checkpoint
                     if mean_iou > self.highest_val_iou:
                         self.highest_val_iou = mean_iou
-                        checkpoint_file = os.path.join(self.log_dir, 'checkpoint.tar')
+                        checkpoint_file = os.path.join(self.log_dir, f'checkpoint_best_{epoch}.tar')
                         self.save_checkpoint(checkpoint_file)
 
     def validate(self):

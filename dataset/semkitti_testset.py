@@ -19,6 +19,7 @@ class SemanticKITTI(torch_data.Dataset):
         self.model_cfg = config_class()
 
         self.sampler = self.model_cfg.sampler
+        self.num_points = self.model_cfg.num_points
         self.num_classes = self.model_cfg.num_classes
         self.ignored_labels = np.sort([0])
 
@@ -56,6 +57,15 @@ class SemanticKITTI(torch_data.Dataset):
         elif self.sampler == "random_sampler":
             selected_pc, selected_labels, selected_idx = self.random_sample(pc, labels)
         return selected_pc, selected_labels, selected_idx, np.array([cloud_ind], dtype=np.int32), pc_path
+
+    def random_sample(self, points, labels):
+        N = points.shape[0]
+        if N >= self.num_points :
+            choice = np.random.choice(N, self.num_points , replace=False)
+        else:
+            choice = np.random.choice(N, self.num_points , replace=True)
+
+        return points[choice], labels[choice], choice
 
     def get_data(self, file_path):
         """ Read points, labels and search_tree data.

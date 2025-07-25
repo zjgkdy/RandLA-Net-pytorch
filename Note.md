@@ -139,3 +139,52 @@ def reduce_value(value, average=True):
                 value /= world_size
     return value
 ```
+### 6. 模型性能复现
+1. 使用局部区域采样训练语义分割模型：
+    Epoch: 76
+    Acc avg 0.888
+    IoU avg 0.518
+    IoU class 1 [car] = 0.926
+    IoU class 2 [bicycle] = 0.111
+    IoU class 3 [motorcycle] = 0.302
+    IoU class 4 [truck] = 0.642
+    IoU class 5 [other-vehicle] = 0.359
+    IoU class 6 [person] = 0.482
+    IoU class 7 [bicyclist] = 0.635
+    IoU class 8 [motorcyclist] = 0.000
+    IoU class 9 [road] = 0.916
+    IoU class 10 [parking] = 0.405
+    IoU class 11 [sidewalk] = 0.764
+    IoU class 12 [other-ground] = 0.006
+    IoU class 13 [building] = 0.878
+    IoU class 14 [fence] = 0.429
+    IoU class 15 [vegetation] = 0.838
+    IoU class 16 [trunk] = 0.593
+    IoU class 17 [terrain] = 0.704
+    IoU class 18 [pole] = 0.497
+    IoU class 19 [traffic-sign] = 0.355
+2. 使用随机采样训练语义分割模型:
+    Epoch: 26
+    Acc avg 0.868
+    IoU avg 0.474
+    IoU class 1 [car] = 0.896
+    IoU class 2 [bicycle] = 0.071
+    IoU class 3 [motorcycle] = 0.237
+    IoU class 4 [truck] = 0.511
+    IoU class 5 [other-vehicle] = 0.360
+    IoU class 6 [person] = 0.390
+    IoU class 7 [bicyclist] = 0.654
+    IoU class 8 [motorcyclist] = 0.000
+    IoU class 9 [road] = 0.877
+    IoU class 10 [parking] = 0.371
+    IoU class 11 [sidewalk] = 0.669
+    IoU class 12 [other-ground] = 0.002
+    IoU class 13 [building] = 0.857
+    IoU class 14 [fence] = 0.340
+    IoU class 15 [vegetation] = 0.827
+    IoU class 16 [trunk] = 0.507
+    IoU class 17 [terrain] = 0.692
+    IoU class 18 [pole] = 0.441
+    IoU class 19 [traffic-sign] = 0.307
+
+3. 使用随机采用训练可运动分割模型:
